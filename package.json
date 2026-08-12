@@ -1,0 +1,28 @@
+{
+  "name": "chafon-stock-app",
+  "version": "0.1.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "prebuild": "expo prebuild",
+    "lint": "expo lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.0.0",
+    "expo": "~57.0.0",
+    "expo-router": "~57.0.7",
+    "expo-secure-store": "~15.0.0",
+    "expo-status-bar": "~3.0.0",
+    "axios": "^1.11.0",
+    "react": "19.1.0",
+    "react-native": "0.85.0",
+    "expo-modules-core": "~3.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "~19.1.10",
+    "typescript": "~5.9.2"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "expo": {
+    "name": "Chafon Stock",
+    "slug": "chafon-stock",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "chafonstock",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-router",
+      "expo-secure-store"
+    ],
+    "android": {
+      "package": "com.example.chafonstock",
+      "permissions": [
+        "BLUETOOTH_SCAN",
+        "BLUETOOTH_CONNECT"
+      ]
+    },
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
