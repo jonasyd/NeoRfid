@@ -15,7 +15,16 @@
       "permissions": [
         "BLUETOOTH_SCAN",
         "BLUETOOTH_CONNECT"
-      ]
+      ],
+      "softwareKeyboardLayoutMode": "pan"
+    },
+    "statusBar": {
+      "barStyle": "dark-content",
+      "translucent": true
+    },
+    "navigationBar": {
+      "barStyle": "dark-content",
+      "translucent": true
     },
     "experiments": {
       "typedRoutes": true
