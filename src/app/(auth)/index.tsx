@@ -52,14 +52,14 @@ export default function LoginScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', backgroundColor: '#eef3f8', padding: 20 },
-  card: { backgroundColor: '#fff', borderRadius: 20, padding: 24, shadowOpacity: 0.08, shadowRadius: 18, elevation: 3 },
-  logo: { alignSelf: 'center', width: 76, height: 76, borderRadius: 38, justifyContent: 'center', alignItems: 'center', backgroundColor: '#e8f1ff', marginBottom: 12 },
-  title: { textAlign: 'center', fontSize: 25, fontWeight: '700', color: '#172033' },
-  subtitle: { textAlign: 'center', color: '#667085', marginTop: 4, marginBottom: 26 },
-  label: { fontSize: 13, fontWeight: '600', color: '#344054', marginBottom: 6 },
-  input: { height: 48, borderWidth: 1, borderColor: '#d0d5dd', borderRadius: 10, paddingHorizontal: 14, marginBottom: 15, color: '#101828' },
-  button: { height: 50, backgroundColor: '#0b63ce', borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginTop: 6 },
+  container: { flex: 1, justifyContent: 'center', backgroundColor: '#eef3f8', padding: 24 },
+  card: { backgroundColor: '#fff', borderRadius: 16, padding: 24, shadowOpacity: 0.08, shadowRadius: 16, elevation: 3 },
+  logo: { alignSelf: 'center', width: 80, height: 80, borderRadius: 40, justifyContent: 'center', alignItems: 'center', backgroundColor: '#e8f1ff', marginBottom: 16 },
+  title: { textAlign: 'center', fontSize: 24, fontWeight: '700', color: '#172033' },
+  subtitle: { textAlign: 'center', color: '#667085', marginTop: 8, marginBottom: 24 },
+  label: { fontSize: 13, fontWeight: '600', color: '#344054', marginBottom: 8 },
+  input: { height: 48, borderWidth: 1, borderColor: '#d0d5dd', borderRadius: 8, paddingHorizontal: 16, marginBottom: 16, color: '#101828' },
+  button: { height: 48, backgroundColor: '#0b63ce', borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
   buttonText: { color: '#fff', fontWeight: '700' },
-  error: { color: '#d92d20', marginBottom: 10, fontSize: 13 },
+  error: { color: '#d92d20', marginBottom: 8, fontSize: 13 },
 });
