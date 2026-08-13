@@ -37,7 +37,7 @@ export interface ChafonH103NativeModule {
 }
 
 const Native = requireNativeModule<ChafonH103NativeModule>('ChafonH103');
-const emitter = new EventEmitter(Native);
+const emitter = new EventEmitter(Native as any);
 
 const ChafonH103 = {
   isSupported: () => Native.isSupported(),
@@ -57,13 +57,13 @@ const ChafonH103 = {
   getBattery: () => Native.getBattery(),
   getDeviceInfo: () => Native.getDeviceInfo(),
   addDeviceListener(listener: (device: ChafonDevice) => void) {
-    return emitter.addListener('onDeviceFound', listener);
+    return (emitter as any).addListener('onDeviceFound', listener);
   },
   addTagListener(listener: (tag: ChafonTag) => void) {
-    return emitter.addListener('onTagRead', listener);
+    return (emitter as any).addListener('onTagRead', listener);
   },
   addConnectionListener(listener: (state: ChafonConnectionState) => void) {
-    return emitter.addListener('onConnectionState', listener);
+    return (emitter as any).addListener('onConnectionState', listener);
   },
 };
 

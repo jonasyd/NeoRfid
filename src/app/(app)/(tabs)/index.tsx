@@ -10,7 +10,7 @@ export default function HomeScreen() {
       <View style={styles.center}>
         <Image source={require('../../../../assets/welcome.png')} style={styles.image} resizeMode="contain" />
         <Text style={styles.title}>¡Bienvenido{session?.username ? `, ${session.username}` : ''}!</Text>
-        <Text style={styles.subtitle}>{session?.depositoSeleccionado?.deposito ?? 'Seleccioná un depósito'}</Text>
+        <Text style={styles.subtitle}>{session?.depositoSeleccionado?.nombre ?? 'Seleccioná un depósito'}</Text>
       </View>
     </Screen>
   );

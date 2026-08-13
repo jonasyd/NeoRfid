@@ -2,11 +2,11 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Screen } from '@/components/Screen';
-import { getStock, searchModels } from '@/services/api';
+import { getStock, searchModels, getSession } from '@/services/api';
 import { buildEpc, type EpcDetectionMode } from '@/services/epc';
-import { getSession } from '@/services/api';
-import type { SearchResult, StockRow } from '@/types/api';
-import ChafonH103, { type ChafonTag } from '@chafon/h103';
+import type { SearchResult, StockRow, Deposito } from '@/types/api';
+import ChafonH103, { type ChafonTag } from '@modules/chafon-h103';
+import { useSession } from '@/context/SessionContext';
 
 const MIN_SEARCH = 3;
 const DEBOUNCE_MS = 350;
@@ -14,7 +14,12 @@ const DEBOUNCE_MS = 350;
 type DetectionState = { mode: EpcDetectionMode; epc: string; running: boolean; lastTag?: ChafonTag } | null;
 
 export default function StockScreen() {
+  const { session, setDeposito } = useSession();
   const [query, setQuery] = useState('');
+
+  // 'text' para buscar por query, 'barcode' para buscar por sku
+  const [searchMode, setSearchMode] = useState<'text' | 'barcode'>('text');
+
   const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
   const [stock, setStock] = useState<StockRow[]>([]);
   const [selectedSku, setSelectedSku] = useState('');
@@ -22,22 +27,35 @@ export default function StockScreen() {
   const [loadingStock, setLoadingStock] = useState(false);
   const [error, setError] = useState('');
   const [detection, setDetection] = useState<DetectionState>(null);
+
+  // Dropdown de depósitos
+  const [showDepositDropdown, setShowDepositDropdown] = useState(false);
+
+  // Calibración de potencia (0 - 30 dBm)
+  const [rfidPower, setRfidPower] = useState(20);
+
   const requestId = useRef(0);
   const inputRef = useRef<TextInput>(null);
 
   useEffect(() => {
-    const sub = ChafonH103.addTagListener((tag) => {
+    const sub = ChafonH103.addTagListener((tag: ChafonTag) => {
       setDetection((current) => current ? { ...current, lastTag: tag } : current);
     });
     return () => sub.remove();
   }, []);
 
+  // Búsqueda incremental con Debounce (solo si el modo es 'text')
   useEffect(() => {
+    if (searchMode !== 'text') return;
+
     if (query.trim().length < MIN_SEARCH) {
-      setSuggestions([]);
-      setError('');
+      setTimeout(() => {
+        setSuggestions([]);
+        setError('');
+      }, 0);
       return;
     }
+
     const timer = setTimeout(async () => {
       const id = ++requestId.current;
       setLoadingSearch(true);
@@ -51,17 +69,16 @@ export default function StockScreen() {
         if (id === requestId.current) setLoadingSearch(false);
       }
     }, DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [query]);
 
-  async function loadSku(sku: string) {
-    setSelectedSku(sku);
-    setQuery(sku);
-    setSuggestions([]);
+    return () => clearTimeout(timer);
+  }, [query, searchMode]);
+
+  async function loadStockForSku(sku: string) {
     setLoadingStock(true);
     setError('');
     try {
-      setStock(await getStock(sku, true));
+      const data = await getStock(sku, true);
+      setStock(data);
     } catch (e: any) {
       setStock([]);
       setError(e?.response?.data?.message ?? e?.message ?? 'No se pudo consultar stock.');
@@ -70,14 +87,38 @@ export default function StockScreen() {
     }
   }
 
-  async function handleBarcodeSearch() {
-    // El H103 puede trabajar como teclado HID para barcode. En ese modo, el botón
-    // deja el campo enfocado y el lector escribe el SKU; el sufijo Enter dispara
-    // la búsqueda SKU en /search. Si el modelo de hardware expone un API de
-    // barcode dedicado en el futuro, reemplazamos solamente esta función.
-    inputRef.current?.focus();
+  // Si cambia el depósito seleccionado o el SKU activo, volver a cargar el stock
+  const activeDepositUuid = session?.depositoSeleccionado?.uuid;
+  useEffect(() => {
+    if (selectedSku) {
+      const timer = setTimeout(() => {
+        loadStockForSku(selectedSku);
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [activeDepositUuid, selectedSku]);
+
+  async function loadSku(sku: string) {
+    setSelectedSku(sku);
+    setQuery(sku);
+    setSuggestions([]);
+    await loadStockForSku(sku);
   }
 
+  // Activa la lectura 2D enfoca el campo de texto y cambia a modo barcode
+  async function handleBarcodeSearch() {
+    setSearchMode('barcode');
+    setQuery('');
+    setSuggestions([]);
+    setStock([]);
+    setSelectedSku('');
+    setError('');
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 100);
+  }
+
+  // Ejecuta la búsqueda enviando SKU en el body
   async function handleSkuScanSubmit() {
     const sku = query.trim();
     if (!sku) return;
@@ -90,6 +131,9 @@ export default function StockScreen() {
       if (results.length === 1) {
         const detectedSku = extractSku(results[0].model) ?? sku;
         await loadSku(detectedSku);
+      } else if (results.length === 0) {
+        // Si no se encuentra un modelo, intentamos consultar el stock directamente con ese SKU
+        await loadSku(sku);
       }
     } catch (e: any) {
       setError(e?.response?.data?.message ?? e?.message ?? 'No se pudo buscar el SKU.');
@@ -109,10 +153,10 @@ export default function StockScreen() {
 
   async function startDetection(row: StockRow, mode: EpcDetectionMode) {
     try {
-      const session = getSession();
-      if (!session?.brandPrefix) throw new Error('No hay brandPrefix en la sesión.');
+      const sess = getSession();
+      if (!sess?.brandPrefix) throw new Error('No hay brandPrefix en la sesión.');
       const epc = buildEpc({
-        brandPrefix: session.brandPrefix,
+        brandPrefix: sess.brandPrefix,
         modelrfid: row.modelrfid,
         modelcolrfid: row.modelcolrfid,
         modelsizfid: row.modelsizfid,
@@ -134,11 +178,106 @@ export default function StockScreen() {
     }
   }
 
+  // Cambiar depósito de forma reactiva
+  async function handleSelectDeposit(dep: Deposito) {
+    try {
+      await setDeposito(dep);
+      setShowDepositDropdown(false);
+    } catch {
+      setError('No se pudo cambiar de depósito.');
+    }
+  }
+
+  // Calibración de potencia RFID Chafon (+/-)
+  function adjustPower(amount: number) {
+    setRfidPower((prev) => {
+      const next = prev + amount;
+      return Math.max(0, Math.min(30, next));
+    });
+  }
+
   return (
     <Screen>
-      <Text style={styles.title}>Consulta de stock</Text>
-      <Text style={styles.subtitle}>Escaneá un SKU o buscá por descripción.</Text>
+      {/* Selector de Depósitos (Combo Box Customizado) */}
+      <View style={styles.depositContainer}>
+        <Text style={styles.depositLabel}>Depósito de consulta:</Text>
+        <Pressable
+          style={styles.depositPicker}
+          onPress={() => setShowDepositDropdown(!showDepositDropdown)}
+        >
+          <Text style={styles.depositPickerText}>
+            {session?.depositoSeleccionado?.nombre ?? 'Seleccionar Depósito'}
+          </Text>
+          <Ionicons
+            name={showDepositDropdown ? "chevron-up" : "chevron-down"}
+            size={20}
+            color="#475467"
+          />
+        </Pressable>
 
+        {showDepositDropdown && (
+          <View style={styles.dropdownList}>
+            {(session?.depositos ?? []).map((dep) => (
+              <Pressable
+                key={dep.uuid}
+                style={[
+                  styles.dropdownItem,
+                  session?.depositoSeleccionado?.uuid === dep.uuid && styles.dropdownItemActive
+                ]}
+                onPress={() => handleSelectDeposit(dep)}
+              >
+                <Text
+                  style={[
+                    styles.dropdownItemText,
+                    session?.depositoSeleccionado?.uuid === dep.uuid && styles.dropdownItemTextActive
+                  ]}
+                >
+                  {dep.nombre}
+                </Text>
+                {session?.depositoSeleccionado?.uuid === dep.uuid && (
+                  <Ionicons name="checkmark" size={18} color="#0b63ce" />
+                )}
+              </Pressable>
+            ))}
+          </View>
+        )}
+      </View>
+
+      {/* Sección de Calibración de Potencia RFID Chafon */}
+      <View style={styles.calibrationCard}>
+        <View style={styles.calibrationHeader}>
+          <Ionicons name="flash-outline" size={18} color="#0b63ce" />
+          <Text style={styles.calibrationTitle}>Calibración de Potencia RFID Chafon</Text>
+        </View>
+        <View style={styles.calibrationControls}>
+          <Pressable style={styles.calibButton} onPress={() => adjustPower(-1)}>
+            <Text style={styles.calibButtonText}>-</Text>
+          </Pressable>
+          <Text style={styles.calibValue}>{rfidPower} dBm</Text>
+          <Pressable style={styles.calibButton} onPress={() => adjustPower(1)}>
+            <Text style={styles.calibButtonText}>+</Text>
+          </Pressable>
+        </View>
+      </View>
+
+      <Text style={styles.title}>Consulta de stock</Text>
+
+      {/* Indicador de Modo de Búsqueda */}
+      <View style={styles.modeContainer}>
+        <Text style={styles.modeText}>
+          Modo actual:{' '}
+          <Text style={styles.modeActive}>
+            {searchMode === 'barcode' ? 'Lectura Barcode/SKU' : 'Búsqueda Texto/Query'}
+          </Text>
+        </Text>
+        {searchMode === 'barcode' && (
+          <Pressable style={styles.resetModeButton} onPress={() => { setSearchMode('text'); setQuery(''); }}>
+            <Text style={styles.resetModeButtonText}>Volver a Texto</Text>
+          </Pressable>
+        )}
+      </View>
+
+      {/* Barra de Búsqueda */}
       <View style={styles.searchBox}>
         <Ionicons name="search-outline" size={21} color="#667085" />
         <TextInput
@@ -146,16 +285,33 @@ export default function StockScreen() {
           style={styles.input}
           value={query}
           onChangeText={setQuery}
-          placeholder="SKU / descripción"
+          placeholder={searchMode === 'barcode' ? "Escanee / Ingrese SKU" : "Buscá por descripción"}
           autoCorrect={false}
           autoCapitalize="none"
           returnKeyType="search"
-          onSubmitEditing={handleSkuScanSubmit}
+          onSubmitEditing={searchMode === 'barcode' ? handleSkuScanSubmit : undefined}
         />
         <Pressable accessibilityLabel="Leer barcode" style={styles.scanButton} onPress={handleBarcodeSearch}>
           <Ionicons name="barcode-outline" size={23} color="#0b63ce" />
         </Pressable>
       </View>
+
+      {/* Simulador de Escaneo de Barcode para facilitar pruebas automatizadas */}
+      {searchMode === 'barcode' && (
+        <Pressable
+          style={styles.simulateButton}
+          onPress={() => {
+            const testSku = query || 'MOCK-SKU-100';
+            setQuery(testSku);
+            setTimeout(() => {
+              handleSkuScanSubmit().catch(() => undefined);
+            }, 100);
+          }}
+        >
+          <Ionicons name="play-outline" size={16} color="#0b63ce" />
+          <Text style={styles.simulateButtonText}>Simular Lectura de Barcode (Enviar SKU)</Text>
+        </Pressable>
+      )}
 
       {loadingSearch && <ActivityIndicator style={{ marginVertical: 14 }} />}
       {!!error && <Text style={styles.error}>{error}</Text>}
@@ -180,7 +336,11 @@ export default function StockScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.detectionTitle}>Detección RFID activa</Text>
             <Text style={styles.detectionEpc}>{detection.epc}</Text>
-            {detection.lastTag && <Text style={styles.detectionTag}>Detectado: {detection.lastTag.epc} · RSSI {detection.lastTag.rssi}</Text>}
+            {detection.lastTag && (
+              <Text style={styles.detectionTag}>
+                Detectado: {detection.lastTag.epc} · RSSI {detection.lastTag.rssi}
+              </Text>
+            )}
           </View>
           <Pressable onPress={stopDetection} style={styles.stopButton}>
             <Ionicons name="stop-circle-outline" size={28} color="#b42318" />
@@ -199,7 +359,11 @@ export default function StockScreen() {
             onDetect={(mode) => startDetection(item, mode)}
           />
         )}
-        ListEmptyComponent={!loadingStock && selectedSku ? <Text style={styles.empty}>Sin stock para el SKU consultado.</Text> : null}
+        ListEmptyComponent={
+          !loadingStock && selectedSku ? (
+            <Text style={styles.empty}>Sin stock para el SKU consultado en el depósito activo.</Text>
+          ) : null
+        }
       />
     </Screen>
   );
@@ -277,15 +441,27 @@ function getImageUri(image?: string): string | undefined {
   const value = image.trim();
   if (!value) return undefined;
   if (value.startsWith('data:image/')) return value;
-
-  // The API currently returns the raw Base64 payload. JPEG is the default
-  // fallback; if the backend later returns a data URI, it is preserved above.
   return `data:image/jpeg;base64,${value}`;
 }
 
-function DetectButton({ icon, label, onPress, disabled = false }: { icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void; disabled?: boolean }) {
+function DetectButton({
+  icon,
+  label,
+  onPress,
+  disabled = false
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+  disabled?: boolean
+}) {
   return (
-    <Pressable disabled={disabled} accessibilityLabel={`Detectar ${label}`} onPress={onPress} style={[styles.detectButton, disabled && styles.detectButtonDisabled]}>
+    <Pressable
+      disabled={disabled}
+      accessibilityLabel={`Detectar ${label}`}
+      onPress={onPress}
+      style={[styles.detectButton, disabled && styles.detectButtonDisabled]}
+    >
       <Ionicons name={icon} size={20} color={disabled ? '#98a2b3' : '#0b63ce'} />
       <Text style={[styles.detectLabel, disabled && styles.detectLabelDisabled]}>{label}</Text>
     </Pressable>
@@ -293,8 +469,7 @@ function DetectButton({ icon, label, onPress, disabled = false }: { icon: keyof 
 }
 
 const styles = StyleSheet.create({
-  title: { fontSize: 24, fontWeight: '700', color: '#101828', marginTop: 4 },
-  subtitle: { color: '#667085', marginTop: 4, marginBottom: 14 },
+  title: { fontSize: 24, fontWeight: '700', color: '#101828', marginTop: 16, marginBottom: 8 },
   searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#d0d5dd', paddingLeft: 12, minHeight: 50 },
   input: { flex: 1, paddingHorizontal: 10, color: '#101828', fontSize: 15 },
   scanButton: { width: 48, height: 48, justifyContent: 'center', alignItems: 'center', borderLeftWidth: 1, borderLeftColor: '#eaecf0' },
@@ -328,4 +503,35 @@ const styles = StyleSheet.create({
   detectionEpc: { color: '#667085', fontSize: 10, marginTop: 3 },
   detectionTag: { color: '#027a48', fontSize: 11, marginTop: 5, fontWeight: '600' },
   stopButton: { padding: 8 },
+
+  // Custom deposit selector styles
+  depositContainer: { backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#eaecf0', marginBottom: 12 },
+  depositLabel: { fontSize: 12, fontWeight: '600', color: '#475467', marginBottom: 6 },
+  depositPicker: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: '#d0d5dd', borderRadius: 8, padding: 10, backgroundColor: '#f9fafb' },
+  depositPickerText: { fontSize: 14, fontWeight: '600', color: '#101828' },
+  dropdownList: { marginTop: 6, borderWidth: 1, borderColor: '#eaecf0', borderRadius: 8, overflow: 'hidden', backgroundColor: '#fff' },
+  dropdownItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 12, borderBottomWidth: 1, borderBottomColor: '#f2f4f7' },
+  dropdownItemActive: { backgroundColor: '#f5f9ff' },
+  dropdownItemText: { fontSize: 13, color: '#344054' },
+  dropdownItemTextActive: { fontWeight: '700', color: '#0b63ce' },
+
+  // Power calibration styles
+  calibrationCard: { backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#eaecf0', marginBottom: 12 },
+  calibrationHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
+  calibrationTitle: { fontSize: 13, fontWeight: '700', color: '#344054' },
+  calibrationControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20, paddingVertical: 4 },
+  calibButton: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: '#d0d5dd', backgroundColor: '#f9fafb', justifyContent: 'center', alignItems: 'center' },
+  calibButtonText: { fontSize: 18, fontWeight: '600', color: '#101828' },
+  calibValue: { fontSize: 15, fontWeight: '700', color: '#0b63ce', minWidth: 60, textAlign: 'center' },
+
+  // Mode select styles
+  modeContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, marginTop: 4 },
+  modeText: { fontSize: 12, color: '#475467' },
+  modeActive: { fontWeight: '700', color: '#0b63ce' },
+  resetModeButton: { padding: 4, paddingHorizontal: 8, borderRadius: 6, backgroundColor: '#f2f4f7' },
+  resetModeButtonText: { fontSize: 11, fontWeight: '600', color: '#344054' },
+
+  // Simulate button styles
+  simulateButton: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, padding: 10, borderRadius: 8, backgroundColor: '#eff8ff', borderWidth: 1, borderColor: '#b2ddff', alignSelf: 'flex-start' },
+  simulateButtonText: { fontSize: 11, fontWeight: '600', color: '#0b63ce' }
 });
