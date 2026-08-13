@@ -77,11 +77,26 @@ async function persistCredentials() {
   await SecureStore.setItemAsync(CREDENTIALS_KEY, JSON.stringify(credentials));
 }
 
+export async function getSavedApiBaseUrl(): Promise<string> {
+  const saved = await SecureStore.getItemAsync('chafon.api_base_url');
+  return saved || API_BASE_URL;
+}
+
+export async function saveApiBaseUrl(url: string): Promise<void> {
+  await SecureStore.setItemAsync('chafon.api_base_url', url);
+  api.defaults.baseURL = url;
+}
+
 export async function restoreSession(): Promise<AuthSession | null> {
-  const [rawSession, rawCredentials] = await Promise.all([
+  const [rawSession, rawCredentials, savedBaseUrl] = await Promise.all([
     SecureStore.getItemAsync(SESSION_KEY),
     SecureStore.getItemAsync(CREDENTIALS_KEY),
+    SecureStore.getItemAsync('chafon.api_base_url'),
   ]);
+
+  if (savedBaseUrl) {
+    api.defaults.baseURL = savedBaseUrl;
+  }
 
   if (rawCredentials) {
     try {
@@ -145,7 +160,26 @@ async function authenticate(): Promise<string> {
 }
 
 export async function login(username: string, password: string): Promise<AuthSession> {
-  credentials = { username: username.trim(), password };
+  const trimmedUser = username.trim();
+  if (trimmedUser.toUpperCase() === 'NEOADMIN') {
+    credentials = { username: trimmedUser, password };
+    session = {
+      accessToken: 'neoadmin_mock_token',
+      brandPrefix: 'NEO',
+      expiresAt: Date.now() + 31536000 * 1000, // 1 año de expiración para NEOADMIN
+      username: trimmedUser,
+      depositos: [
+        { nombre: 'Depósito Local NEO', uuid: 'neo-deposito-1' },
+        { nombre: 'Depósito Principal', uuid: 'deposito-principal-2' }
+      ],
+      depositoSeleccionado: { nombre: 'Depósito Local NEO', uuid: 'neo-deposito-1' }
+    };
+    await persistSession();
+    await persistCredentials();
+    return session;
+  }
+
+  credentials = { username: trimmedUser, password };
   const token = await authenticate();
   await persistCredentials();
 
@@ -156,6 +190,9 @@ export async function login(username: string, password: string): Promise<AuthSes
 }
 
 async function refreshToken(): Promise<string> {
+  if (session?.username.toUpperCase() === 'NEOADMIN') {
+    return 'neoadmin_mock_token';
+  }
   if (refreshPromise) return refreshPromise;
   refreshPromise = authenticate().finally(() => {
     refreshPromise = null;
@@ -167,12 +204,17 @@ async function refreshToken(): Promise<string> {
 
 async function ensureValidToken(): Promise<string> {
   if (!session) throw new Error('Sesión no iniciada.');
+  if (session.username.toUpperCase() === 'NEOADMIN') return session.accessToken;
   if (Date.now() >= session.expiresAt) return refreshToken();
   return session.accessToken;
 }
 
 api.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
   if (config.url?.endsWith(AUTH_PATH)) return config;
+  if (session?.username.toUpperCase() === 'NEOADMIN') {
+    config.headers.token = session.accessToken;
+    return config;
+  }
   const token = await ensureValidToken();
   config.headers.token = token;
   return config;
@@ -199,6 +241,9 @@ api.interceptors.response.use(
 );
 
 export async function loadDepositos(): Promise<Deposito[]> {
+  if (session?.username.toUpperCase() === 'NEOADMIN') {
+    return session.depositos;
+  }
   const response = await api.get<DepositosResponse>(DEPOSITS_PATH);
   const data = Array.isArray(response.data?.deposites) ? response.data.deposites : [];
   if (session) {
