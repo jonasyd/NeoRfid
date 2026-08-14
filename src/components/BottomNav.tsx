@@ -1,13 +1,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import React from 'react';
+import { Alert, BackHandler } from 'react-native';
 
 const icons: Record<string, keyof typeof Ionicons.glyphMap> = {
   index: 'home-outline',
-  stock: 'search-outline',
-  inventario: 'clipboard-outline',
+  stock: 'barcode-outline',
+  inventario: 'easel-outline',
   pedidos: 'cart-outline',
   configuracion: 'settings-outline',
+  salir: 'log-out-outline',
 };
 
 export function AppTabs() {
@@ -27,6 +29,24 @@ export function AppTabs() {
       <Tabs.Screen name="inventario" options={{ title: 'Inventario' }} />
       <Tabs.Screen name="pedidos" options={{ title: 'Pedidos' }} />
       <Tabs.Screen name="configuracion" options={{ title: 'Config.' }} />
+      <Tabs.Screen
+        name="salir"
+        options={{ title: 'Salir' }}
+        listeners={{
+          tabPress: (e) => {
+            e.preventDefault();
+            Alert.alert(
+              'Salir',
+              '¿Desea cerrar la aplicación?',
+              [
+                { text: 'Cancelar', style: 'cancel' },
+                { text: 'Salir', onPress: () => BackHandler.exitApp() },
+              ],
+              { cancelable: true }
+            );
+          },
+        }}
+      />
     </Tabs>
   );
 }
