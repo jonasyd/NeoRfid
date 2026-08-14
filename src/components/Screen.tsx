@@ -1,8 +1,19 @@
 import React, { PropsWithChildren } from 'react';
-import { SafeAreaView, StyleSheet, View } from 'react-native';
+import { SafeAreaView, StyleSheet, View, ViewStyle } from 'react-native';
 
-export function Screen({ children }: PropsWithChildren) {
-  return <SafeAreaView style={styles.safe}><View style={styles.container}>{children}</View></SafeAreaView>;
+interface ScreenProps extends PropsWithChildren {
+  style?: ViewStyle;
+  noPadding?: boolean;
+}
+
+export function Screen({ children, style, noPadding }: ScreenProps) {
+  return (
+    <SafeAreaView style={styles.safe}>
+      <View style={[styles.container, noPadding && { padding: 0 }, style]}>
+        {children}
+      </View>
+    </SafeAreaView>
+  );
 }
 
 const styles = StyleSheet.create({

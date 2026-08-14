@@ -6,7 +6,7 @@ import { useSession } from '@/context/SessionContext';
 export default function HomeScreen() {
   const { session } = useSession();
   return (
-    <Screen>
+    <Screen noPadding>
       <View style={styles.container}>
         <Image
           source={require('../../../../assets/welcome.png')}
@@ -15,7 +15,6 @@ export default function HomeScreen() {
         />
         <View style={styles.overlay}>
           <Text style={styles.title}>¡Bienvenido{session?.username ? `, ${session.username}` : ''}!</Text>
-          <Text style={styles.subtitle}>{session?.depositoSeleccionado?.nombre ?? 'Seleccioná un depósito'}</Text>
         </View>
       </View>
     </Screen>
@@ -37,15 +36,6 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     marginTop: 12,
     textAlign: 'center',
-    textShadowColor: 'rgba(0, 0, 0, 0.75)',
-    textShadowOffset: { width: -1, height: 1 },
-    textShadowRadius: 10
-  },
-  subtitle: {
-    color: '#ffffff',
-    marginTop: 6,
-    fontSize: 16,
-    fontWeight: '600',
     textShadowColor: 'rgba(0, 0, 0, 0.75)',
     textShadowOffset: { width: -1, height: 1 },
     textShadowRadius: 10
