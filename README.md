@@ -101,3 +101,47 @@ npx expo prebuild --clean
 
 ### 4. Desactivar el uso de `--tunnel` para Depuración Activa
 Si inicias el servidor con la bandera `--tunnel` (por ejemplo, `npx expo start --tunnel`), las conexiones WebSocket de depuración de React Native DevTools no se admiten sobre el túnel proxy de Ngrok de Expo. Utiliza la conexión por red local (LAN) o USB para depurar de forma interactiva.
+
+
+## Solución a Errores de Compilación Nativa (Gradle Build Failures)
+
+Si al compilar con `.\compilar.ps1` o `npx expo run:android` después de actualizar versiones de dependencias (como `react-native` a `0.87.0`), encuentras errores relacionados con Gradle como:
+```
+FAILURE: Build failed with an exception.
+Settings file '...\android\settings.gradle' line: 21
+What went wrong:
+Error resolving plugin [id: 'com.facebook.react.settings']
+> org/gradle/api/artifacts/SelfResolvingDependency
+```
+
+Esto ocurre porque existe una carpeta `android/` en tu máquina local que quedó obsoleta y fue generada con una versión de Gradle o configuración de plugin antigua, lo cual genera un conflicto con las nuevas dependencias instaladas en `package.json`.
+
+Sigue estos pasos en orden para resolverlo:
+
+### 1. Limpieza Completa de Archivos Generados
+Elimina por completo la carpeta nativa `android` que fue autogenerada en tu máquina local para forzar a Expo a recrearla de forma limpia compatible con React Native `0.87.0`:
+
+En PowerShell:
+```powershell
+Remove-Item -Recurse -Force android
+```
+En Bash (Linux/macOS):
+```bash
+rm -rf android
+```
+
+### 2. Regenerar y Preconstruir el Proyecto Limpiamente
+Ejecuta una preconstrucción limpia para regenerar la carpeta `android` con la versión de Gradle correcta (8.x) recomendada para Expo SDK 57 / React Native 0.87:
+```bash
+npx expo prebuild --clean
+```
+
+### 3. Compilar Nuevamente
+Una vez regenerado el directorio de forma limpia, puedes compilar normalmente utilizando tu script:
+```powershell
+.\compilar.ps1
+```
+o ejecutando:
+```bash
+npx expo run:android
+```
