@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import React from 'react';
 import { Alert, BackHandler } from 'react-native';
+import { useSession } from '@/context/SessionContext';
 
 const icons: Record<string, keyof typeof Ionicons.glyphMap> = {
   index: 'home-outline',
@@ -13,6 +14,8 @@ const icons: Record<string, keyof typeof Ionicons.glyphMap> = {
 };
 
 export function AppTabs() {
+  const { signOut } = useSession();
+
   return (
     <Tabs
       screenOptions={({ route }) => ({
@@ -40,7 +43,15 @@ export function AppTabs() {
               '¿Desea cerrar la aplicación?',
               [
                 { text: 'Cancelar', style: 'cancel' },
-                { text: 'Salir', onPress: () => BackHandler.exitApp() },
+                {
+                  text: 'Salir',
+                  onPress: async () => {
+                    try {
+                      await signOut();
+                    } catch {}
+                    BackHandler.exitApp();
+                  }
+                },
               ],
               { cancelable: true }
             );

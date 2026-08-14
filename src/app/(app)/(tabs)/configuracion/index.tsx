@@ -138,10 +138,6 @@ export default function ConfiguracionScreen() {
           <Ionicons name="person-outline" size={20} color="#667085" />
           <Text style={styles.rowText}>{session?.username}</Text>
         </View>
-        <View style={styles.row}>
-          <Ionicons name="business-outline" size={20} color="#667085" />
-          <Text style={styles.rowText}>{session?.depositoSeleccionado?.nombre ?? 'Sin depósito'}</Text>
-        </View>
 
         <Text style={styles.section}>URL Base del Endpoint</Text>
         <View style={styles.urlContainer}>
