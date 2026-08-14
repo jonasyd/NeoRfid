@@ -6,7 +6,7 @@ import { Alert, BackHandler } from 'react-native';
 const icons: Record<string, keyof typeof Ionicons.glyphMap> = {
   index: 'home-outline',
   stock: 'barcode-outline',
-  inventario: 'easel-outline',
+  inventario: 'book-outline',
   pedidos: 'cart-outline',
   configuracion: 'settings-outline',
   salir: 'log-out-outline',

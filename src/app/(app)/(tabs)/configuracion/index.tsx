@@ -7,7 +7,7 @@ import { useSession } from '@/context/SessionContext';
 import { getSavedApiBaseUrl, saveApiBaseUrl } from '@/services/api';
 
 export default function ConfiguracionScreen() {
-  const { session, signOut } = useSession();
+  const { session } = useSession();
   const [serviceUuid, setServiceUuid] = useState('');
   const [notifyUuid, setNotifyUuid] = useState('');
   const [writeUuid, setWriteUuid] = useState('');
@@ -214,10 +214,6 @@ export default function ConfiguracionScreen() {
             {deviceInfo !== null && <Text style={styles.toolVal} numberOfLines={1}>Cargado</Text>}
           </Pressable>
         </View>
-
-        <Pressable style={[styles.button, styles.logout]} onPress={() => signOut()}>
-          <Text style={styles.logoutText}>Salir</Text>
-        </Pressable>
       </ScrollView>
     </Screen>
   );

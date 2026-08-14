@@ -23,8 +23,16 @@ const CREDENTIALS_KEY = 'chafon.credentials.v1';
 
 if (!API_BASE_URL) console.warn('EXPO_PUBLIC_API_BASE_URL no está configurado.');
 
+function joinPath(base: string, path: string): string {
+  const cleanBase = base.endsWith('/') ? base.slice(0, -1) : base;
+  const cleanPath = path.startsWith('/') ? path : '/' + path;
+  return cleanBase + cleanPath;
+}
+
+const SANITIZED_API_BASE_URL = API_BASE_URL.endsWith('/') ? API_BASE_URL.slice(0, -1) : API_BASE_URL;
+
 export const api: AxiosInstance = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: SANITIZED_API_BASE_URL,
   timeout: 15000,
   headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
 });
@@ -43,18 +51,23 @@ function basicHeader(username: string, password: string): string {
 }
 
 function fallbackBase64(input: string): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
   let output = '';
   let i = 0;
   while (i < input.length) {
-    const a = input.charCodeAt(i++);
-    const b = input.charCodeAt(i++);
-    const c = input.charCodeAt(i++);
-    const triplet = (a << 16) | (b << 8) | c;
-    output += chars[(triplet >> 18) & 63];
-    output += chars[(triplet >> 12) & 63];
-    output += Number.isNaN(b) ? '=' : chars[(triplet >> 6) & 63];
-    output += Number.isNaN(c) ? '=' : chars[triplet & 63];
+    const byte1 = input.charCodeAt(i++);
+    const byte2 = i < input.length ? input.charCodeAt(i++) : NaN;
+    const byte3 = i < input.length ? input.charCodeAt(i++) : NaN;
+
+    const enc1 = byte1 >> 2;
+    const enc2 = ((byte1 & 3) << 4) | (Number.isNaN(byte2) ? 0 : byte2 >> 4);
+    const enc3 = Number.isNaN(byte2) ? 64 : ((byte2 & 15) << 2) | (Number.isNaN(byte3) ? 0 : byte3 >> 6);
+    const enc4 = Number.isNaN(byte3) ? 64 : byte3 & 63;
+
+    output += chars.charAt(enc1) +
+              chars.charAt(enc2) +
+              (enc3 === 64 ? '=' : chars.charAt(enc3)) +
+              (enc4 === 64 ? '=' : chars.charAt(enc4));
   }
   return output;
 }
@@ -72,8 +85,6 @@ async function persistCredentials() {
     await SecureStore.deleteItemAsync(CREDENTIALS_KEY);
     return;
   }
-  // El backend no ofrece refresh_token: la renovación se realiza repitiendo Basic Auth.
-  // SecureStore evita guardar la contraseña en AsyncStorage o en texto plano.
   await SecureStore.setItemAsync(CREDENTIALS_KEY, JSON.stringify(credentials));
 }
 
@@ -83,8 +94,9 @@ export async function getSavedApiBaseUrl(): Promise<string> {
 }
 
 export async function saveApiBaseUrl(url: string): Promise<void> {
-  await SecureStore.setItemAsync('chafon.api_base_url', url);
-  api.defaults.baseURL = url;
+  const sanitized = url.endsWith('/') ? url.slice(0, -1) : url;
+  await SecureStore.setItemAsync('chafon.api_base_url', sanitized);
+  api.defaults.baseURL = sanitized;
 }
 
 export async function restoreSession(): Promise<AuthSession | null> {
@@ -95,7 +107,8 @@ export async function restoreSession(): Promise<AuthSession | null> {
   ]);
 
   if (savedBaseUrl) {
-    api.defaults.baseURL = savedBaseUrl;
+    const sanitized = savedBaseUrl.endsWith('/') ? savedBaseUrl.slice(0, -1) : savedBaseUrl;
+    api.defaults.baseURL = sanitized;
   }
 
   if (rawCredentials) {
@@ -130,8 +143,9 @@ function getHeaderValue(headers: unknown, name: string): string | undefined {
 async function authenticate(): Promise<string> {
   if (!credentials) throw new Error('No hay credenciales disponibles para renovar la sesión.');
 
+  const currentBaseUrl = api.defaults.baseURL ?? API_BASE_URL;
   const response = await axios.post<AuthResponseBody>(
-    `${API_BASE_URL}${AUTH_PATH}`,
+    joinPath(currentBaseUrl, AUTH_PATH),
     undefined,
     {
       headers: {
