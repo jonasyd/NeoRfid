@@ -69,3 +69,35 @@ Each stock row has three actions: **Modelo**, **Color** and **Talle**. The nativ
 ## V4 — imagen de stock
 
 La respuesta de `/v1/mobile/stock` soporta ahora `image` como Base64. La pantalla de stock muestra una única miniatura por resultado y conserva los tres botones de detección RFID (Modelo, Color y Talle). Si `image` ya viene como `data:image/...;base64,...`, se respeta el MIME; si viene como Base64 puro, se utiliza JPEG como fallback.
+
+
+## Solución de Problemas de Depuración (Troubleshooting DevTools)
+
+Si al iniciar el servidor de desarrollo e intentar abrir las herramientas de depuración (**React Native DevTools** / **Hermes Debugger**) encuentras la siguiente advertencia:
+```
+WARN  No compatible apps connected. React Native DevTools can only be used with the Hermes engine.
+```
+
+Esto ocurre porque el servidor Metro no puede establecer una conexión WebSocket de depuración con el motor Hermes en tu dispositivo físico (`Positivo_Smart_NFC`). Sigue estos pasos para solucionarlo:
+
+### 1. Reenvío de Puertos (Port Forwarding con ADB)
+Para que el motor de depuración local se comunique con el dispositivo físico a través de USB, debes activar el reenvío de puertos de ADB. Ejecuta el siguiente comando en tu terminal (con el dispositivo conectado por USB y la depuración USB activada):
+```bash
+adb reverse tcp:8081 tcp:8081
+```
+*Nota: Si estás usando depuración por Wi-Fi, asegúrate de que ambos dispositivos (tu PC y tu teléfono) estén exactamente en la misma subred de Wi-Fi y de que no haya un cortafuegos (firewall) bloqueando el puerto `8081`.*
+
+### 2. Esperar a que la Aplicación cargue Completamente
+Metro intenta abrir las DevTools automáticamente al iniciar o inmediatamente después del empaquetado (`Android Bundled`). Si las DevTools se abren antes de que la aplicación haya terminado de inicializarse en el dispositivo físico, Metro no detectará ninguna aplicación compatible conectada.
+- Espera a que la app cargue por completo en la pantalla de inicio del dispositivo.
+- Si ves el aviso, puedes presionar la tecla `j` en la consola de Metro para intentar reabrir las herramientas de depuración una vez que la aplicación esté completamente activa y conectada.
+
+### 3. Asegurar que Hermes esté habilitado de forma Explícita
+Hemos configurado de forma explícita `"jsEngine": "hermes"` dentro del archivo `app.json`. Si has realizado cambios de configuración nativa en el motor JS, es indispensable realizar un nuevo prebuild y compilación limpia del APK para asegurar que el motor Hermes se empaquete correctamente:
+```bash
+npx expo prebuild --clean
+# O compilar localmente con Gradle o EAS Build para actualizar tu APK en el dispositivo
+```
+
+### 4. Desactivar el uso de `--tunnel` para Depuración Activa
+Si inicias el servidor con la bandera `--tunnel` (por ejemplo, `npx expo start --tunnel`), las conexiones WebSocket de depuración de React Native DevTools no se admiten sobre el túnel proxy de Ngrok de Expo. Utiliza la conexión por red local (LAN) o USB para depurar de forma interactiva.

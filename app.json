@@ -3,6 +3,7 @@
     "name": "Chafon Stock",
     "slug": "chafon-stock",
     "version": "0.1.0",
+    "jsEngine": "hermes",
     "orientation": "portrait",
     "scheme": "chafonstock",
     "userInterfaceStyle": "light",
