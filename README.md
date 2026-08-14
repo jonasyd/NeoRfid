@@ -105,43 +105,69 @@ Si inicias el servidor con la bandera `--tunnel` (por ejemplo, `npx expo start -
 
 ## Solución a Errores de Compilación Nativa (Gradle Build Failures)
 
-Si al compilar con `.\compilar.ps1` o `npx expo run:android` después de actualizar versiones de dependencias (como `react-native` a `0.87.0`), encuentras errores relacionados con Gradle como:
+Si al compilar con `.\compilar.ps1` o `npx expo run:android` encuentras errores de Gradle como:
+
 ```
 FAILURE: Build failed with an exception.
-Settings file '...\android\settings.gradle' line: 21
+Build file '...\android\app\build.gradle' line: 1
 What went wrong:
+A problem occurred evaluating project ':app'.
+> Failed to apply plugin 'com.android.internal.version-check'.
+   > Minimum supported Gradle version is 9.4.1. Current version is 9.3.1.
+```
+
+O errores de resolución como:
+```
 Error resolving plugin [id: 'com.facebook.react.settings']
 > org/gradle/api/artifacts/SelfResolvingDependency
 ```
 
-Esto ocurre porque existe una carpeta `android/` en tu máquina local que quedó obsoleta y fue generada con una versión de Gradle o configuración de plugin antigua, lo cual genera un conflicto con las nuevas dependencias instaladas en `package.json`.
+Esto ocurre por dos motivos posibles:
+1. Tu entorno local tiene instalada una versión del Android SDK que es demasiado nueva (ej. API 37 Preview) y Gradle intenta resolver automáticamente compilar con ella, lo cual requiere una versión de Gradle más alta que la versión autogenerada por Expo (9.3.1).
+2. Existe una carpeta local `android/` residual que fue generada con dependencias previas u otra versión de Gradle, causando conflictos con las dependencias actualizadas de React Native `0.87.0`.
 
-Sigue estos pasos en orden para resolverlo:
+### Solución Implementada
+Para solucionar el primer punto y garantizar la máxima compatibilidad, hemos configurado el plugin `expo-build-properties` en tu archivo `app.json` para **fijar el SDK de compilación y destino en la versión 35** (completamente estable y requerida por Google Play para 2025):
 
-### 1. Limpieza Completa de Archivos Generados
-Elimina por completo la carpeta nativa `android` que fue autogenerada en tu máquina local para forzar a Expo a recrearla de forma limpia compatible con React Native `0.87.0`:
-
-En PowerShell:
-```powershell
-Remove-Item -Recurse -Force android
-```
-En Bash (Linux/macOS):
-```bash
-rm -rf android
-```
-
-### 2. Regenerar y Preconstruir el Proyecto Limpiamente
-Ejecuta una preconstrucción limpia para regenerar la carpeta `android` con la versión de Gradle correcta (8.x) recomendada para Expo SDK 57 / React Native 0.87:
-```bash
-npx expo prebuild --clean
+```json
+"plugins": [
+  [
+    "expo-build-properties",
+    {
+      "android": {
+        "compileSdkVersion": 35,
+        "targetSdkVersion": 35,
+        "buildToolsVersion": "35.0.0"
+      }
+    }
+  ]
+]
 ```
 
-### 3. Compilar Nuevamente
-Una vez regenerado el directorio de forma limpia, puedes compilar normalmente utilizando tu script:
-```powershell
-.\compilar.ps1
-```
-o ejecutando:
-```bash
-npx expo run:android
-```
+Esto evitará que Gradle intente autodetectar y compilar con SDKs superiores que requieran versiones de Gradle incompatibles con el Gradle Wrapper por defecto de Expo SDK 57 (9.3.1).
+
+### Pasos locales para realizar una Compilación Limpia
+
+Para aplicar la solución, es sumamente importante limpiar cualquier rastro nativo previo y regenerar el proyecto de forma limpia:
+
+1. **Eliminar la carpeta `android` obsoleta:**
+   En PowerShell:
+   ```powershell
+   Remove-Item -Recurse -Force android
+   ```
+   En Bash:
+   ```bash
+   rm -rf android
+   ```
+
+2. **Limpiar cache de npm y regenerar el prebuild de Expo:**
+   Esto asegurará que Expo cree una nueva carpeta `android` limpia, configurada estrictamente para compilar con la API 35:
+   ```bash
+   npx expo prebuild --clean
+   ```
+
+3. **Volver a ejecutar el Script de compilación:**
+   ```powershell
+   .\compilar.ps1
+   ```
+   *(Nota: Si deseas actualizar manualmente tu Gradle Wrapper local a la versión sugerida por el warning, puedes editar el archivo `android/gradle/wrapper/gradle-wrapper.properties` y cambiar la URL de distribución para que apunte a `gradle-9.4.1-bin.zip`, pero la solución recomendada para Expo es la fijación de SDKs descrita anteriormente).*
