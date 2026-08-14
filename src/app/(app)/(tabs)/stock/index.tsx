@@ -35,7 +35,7 @@ export default function StockScreen() {
   const [rfidPower, setRfidPower] = useState(20);
 
   const requestId = useRef(0);
-  const inputRef = useRef<TextInput>(null);
+  const inputRef = useRef<any>(null);
 
   useEffect(() => {
     const sub = ChafonH103.addTagListener((tag: ChafonTag) => {
@@ -198,9 +198,11 @@ export default function StockScreen() {
 
   return (
     <Screen>
+      <Text style={styles.title}>BÚSQUEDA DE ITEMS</Text>
+
       {/* Selector de Depósitos (Combo Box Customizado) */}
       <View style={styles.depositContainer}>
-        <Text style={styles.depositLabel}>Depósito de consulta:</Text>
+        <Text style={styles.depositLabel}>Seleccione un depósito:</Text>
         <Pressable
           style={styles.depositPicker}
           onPress={() => setShowDepositDropdown(!showDepositDropdown)}
@@ -243,11 +245,11 @@ export default function StockScreen() {
         )}
       </View>
 
-      {/* Sección de Calibración de Potencia RFID Chafon */}
+      {/* Sección de Calibración de Potencia RFID */}
       <View style={styles.calibrationCard}>
         <View style={styles.calibrationHeader}>
           <Ionicons name="flash-outline" size={18} color="#0b63ce" />
-          <Text style={styles.calibrationTitle}>Calibración de Potencia RFID Chafon</Text>
+          <Text style={styles.calibrationTitle}>Calibración de Potencia RFID</Text>
         </View>
         <View style={styles.calibrationControls}>
           <Pressable style={styles.calibButton} onPress={() => adjustPower(-1)}>
@@ -259,8 +261,6 @@ export default function StockScreen() {
           </Pressable>
         </View>
       </View>
-
-      <Text style={styles.title}>Consulta de stock</Text>
 
       {/* Indicador de Modo de Búsqueda */}
       <View style={styles.modeContainer}>
@@ -362,7 +362,7 @@ export default function StockScreen() {
         ListEmptyComponent={
           !loadingStock && selectedSku ? (
             <Text style={styles.empty}>Sin stock para el SKU consultado en el depósito activo.</Text>
-          ) : null
+          ) : undefined
         }
       />
     </Screen>
@@ -469,7 +469,7 @@ function DetectButton({
 }
 
 const styles = StyleSheet.create({
-  title: { fontSize: 24, fontWeight: '700', color: '#101828', marginTop: 16, marginBottom: 8 },
+  title: { fontSize: 24, fontWeight: '700', color: '#101828', marginTop: 8, marginBottom: 12 },
   searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#d0d5dd', paddingLeft: 12, minHeight: 50 },
   input: { flex: 1, paddingHorizontal: 10, color: '#101828', fontSize: 15 },
   scanButton: { width: 48, height: 48, justifyContent: 'center', alignItems: 'center', borderLeftWidth: 1, borderLeftColor: '#eaecf0' },

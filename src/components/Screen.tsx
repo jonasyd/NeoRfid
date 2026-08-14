@@ -1,32 +1,19 @@
 import React, { PropsWithChildren } from 'react';
-import { StyleSheet, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StyleSheet, View, ViewStyle } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-export function Screen({ children }: PropsWithChildren) {
-  const insets = useSafeAreaInsets();
+interface ScreenProps extends PropsWithChildren {
+  style?: ViewStyle;
+  noPadding?: boolean;
+}
 
-  // Rule of 8dp spacing:
-  // Apply a minimum padding of 16dp (2 * 8) plus safe area insets to avoid overlapping
-  // with top status bar or bottom OS navigation indicators.
-  const paddingTop = Math.max(16, Math.ceil(insets.top / 8) * 8);
-  const paddingBottom = Math.max(16, Math.ceil(insets.bottom / 8) * 8);
-  const paddingLeft = Math.max(16, Math.ceil(insets.left / 8) * 8);
-  const paddingRight = Math.max(16, Math.ceil(insets.right / 8) * 8);
-
+export function Screen({ children, style, noPadding }: ScreenProps) {
   return (
-    <View
-      style={[
-        styles.container,
-        {
-          paddingTop,
-          paddingBottom,
-          paddingLeft,
-          paddingRight
-        }
-      ]}
-    >
-      {children}
-    </View>
+    <SafeAreaView style={styles.safe}>
+      <View style={[styles.container, noPadding && { padding: 0 }, style]}>
+        {children}
+      </View>
+    </SafeAreaView>
   );
 }
 

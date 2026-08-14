@@ -7,7 +7,7 @@ import { useSession } from '@/context/SessionContext';
 import { getSavedApiBaseUrl, saveApiBaseUrl } from '@/services/api';
 
 export default function ConfiguracionScreen() {
-  const { session, signOut } = useSession();
+  const { session } = useSession();
   const [serviceUuid, setServiceUuid] = useState('');
   const [notifyUuid, setNotifyUuid] = useState('');
   const [writeUuid, setWriteUuid] = useState('');
@@ -138,10 +138,6 @@ export default function ConfiguracionScreen() {
           <Ionicons name="person-outline" size={20} color="#667085" />
           <Text style={styles.rowText}>{session?.username}</Text>
         </View>
-        <View style={styles.row}>
-          <Ionicons name="business-outline" size={20} color="#667085" />
-          <Text style={styles.rowText}>{session?.depositoSeleccionado?.nombre ?? 'Sin depósito'}</Text>
-        </View>
 
         <Text style={styles.section}>URL Base del Endpoint</Text>
         <View style={styles.urlContainer}>
@@ -214,10 +210,6 @@ export default function ConfiguracionScreen() {
             {deviceInfo !== null && <Text style={styles.toolVal} numberOfLines={1}>Cargado</Text>}
           </Pressable>
         </View>
-
-        <Pressable style={[styles.button, styles.logout]} onPress={() => signOut()}>
-          <Text style={styles.logoutText}>Salir</Text>
-        </Pressable>
       </ScrollView>
     </Screen>
   );
