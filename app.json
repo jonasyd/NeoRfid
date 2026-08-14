@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Neoretail Inventarios",
-    "slug": "chafon-stock",
+    "slug": "Neoretail-stock",
     "version": "0.1.0",
     "jsEngine": "hermes",
     "icon": "./assets/icon.png",
@@ -11,7 +11,7 @@
       "backgroundColor": "#022449"
     },
     "orientation": "portrait",
-    "scheme": "chafonstock",
+    "scheme": "neoretailstock",
     "userInterfaceStyle": "light",
     "plugins": [
       "expo-router",
@@ -28,7 +28,7 @@
       ]
     ],
     "android": {
-      "package": "com.example.chafonstock",
+      "package": "com.example.neoretailstock",
       "permissions": [
         "BLUETOOTH_SCAN",
         "BLUETOOTH_CONNECT"

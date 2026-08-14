@@ -24,7 +24,7 @@ export function AppTabs() {
         tabBarInactiveTintColor: '#667085',
         tabBarLabelStyle: { fontSize: 10, marginBottom: 2 },
         tabBarStyle: { height: 62, paddingTop: 5 },
-        tabBarIcon: ({ color, size }) => <Ionicons name={icons[route.name] ?? 'ellipse-outline'} color={color} size={size} />,
+        tabBarIcon: ({ color, size }) => <Ionicons name={icons[route.name] ?? 'ellipse-outline'} color={color as any} size={size} />,
       })}
     >
       <Tabs.Screen name="index" options={{ title: 'Inicio' }} />

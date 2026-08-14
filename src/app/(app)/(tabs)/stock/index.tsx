@@ -35,7 +35,7 @@ export default function StockScreen() {
   const [rfidPower, setRfidPower] = useState(20);
 
   const requestId = useRef(0);
-  const inputRef = useRef<TextInput>(null);
+  const inputRef = useRef<any>(null);
 
   useEffect(() => {
     const sub = ChafonH103.addTagListener((tag: ChafonTag) => {
@@ -362,7 +362,7 @@ export default function StockScreen() {
         ListEmptyComponent={
           !loadingStock && selectedSku ? (
             <Text style={styles.empty}>Sin stock para el SKU consultado en el depósito activo.</Text>
-          ) : null
+          ) : undefined
         }
       />
     </Screen>
