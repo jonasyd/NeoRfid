@@ -162,6 +162,9 @@ async function authenticate(): Promise<string> {
 export async function login(username: string, password: string): Promise<AuthSession> {
   const trimmedUser = username.trim();
   if (trimmedUser.toUpperCase() === 'NEOADMIN') {
+    if (password !== 'Kom!25') {
+      throw new Error('Usuario o contraseña incorrectos.');
+    }
     credentials = { username: trimmedUser, password };
     session = {
       accessToken: 'neoadmin_mock_token',
