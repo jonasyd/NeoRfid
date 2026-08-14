@@ -27,8 +27,9 @@ const styles = StyleSheet.create({
   overlay: {
     flex: 1,
     alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(2, 36, 73, 0.45)'
+    justifyContent: 'flex-start',
+    backgroundColor: 'rgba(2, 36, 73, 0.45)',
+    paddingTop: 50
   },
   title: {
     fontSize: 28,
