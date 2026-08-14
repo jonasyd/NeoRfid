@@ -18,6 +18,8 @@ export function Screen({ children, style, noPadding }: ScreenProps) {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#f7f8fa' },
-  container: { flex: 1, padding: 16 },
+  container: {
+    flex: 1,
+    backgroundColor: '#f7f8fa'
+  },
 });

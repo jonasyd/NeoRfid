@@ -104,5 +104,5 @@ const styles = StyleSheet.create({
   },
   button: { height: 50, backgroundColor: '#0b63ce', borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginTop: 6 },
   buttonText: { color: '#fff', fontWeight: '700' },
-  error: { color: '#d92d20', marginBottom: 10, fontSize: 13 },
+  error: { color: '#d92d20', marginBottom: 8, fontSize: 13 },
 });
