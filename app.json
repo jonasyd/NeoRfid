@@ -17,6 +17,12 @@
       "expo-router",
       "expo-secure-store",
       [
+        "./plugins/withGradleWrapper.js",
+        {
+          "gradleVersion": "9.4.1"
+        }
+      ],
+      [
         "expo-build-properties",
         {
           "android": {

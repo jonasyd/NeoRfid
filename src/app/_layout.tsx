@@ -3,18 +3,13 @@ import React from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { SessionProvider, useSession } from '@/context/SessionContext';
 import { SplashScreenController } from '@/utils/SplashScreenController';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { StatusBar } from 'expo-status-bar';
 
 export default function RootLayout() {
   return (
-    <SafeAreaProvider>
-      <StatusBar style="dark" />
-      <SessionProvider>
-        <SplashScreenController />
-        <RootNavigator />
-      </SessionProvider>
-    </SafeAreaProvider>
+    <SessionProvider>
+      <SplashScreenController />
+      <RootNavigator />
+    </SessionProvider>
   );
 }
 
