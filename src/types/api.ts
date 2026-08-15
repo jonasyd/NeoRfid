@@ -14,6 +14,7 @@ export interface AuthResponseBody {
 export interface Deposito {
   nombre: string;
   uuid: string;
+  Sucursal?: string;
 }
 
 export interface DepositosResponse {

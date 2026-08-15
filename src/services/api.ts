@@ -265,6 +265,9 @@ export async function loadDepositos(): Promise<Deposito[]> {
   const data = Array.isArray(response.data?.deposites) ? response.data.deposites : [];
   if (session) {
     session.depositos = data;
+    if (!session.depositoSeleccionado && data.length > 0) {
+      session.depositoSeleccionado = data[0];
+    }
     await persistSession();
   }
   return data;
