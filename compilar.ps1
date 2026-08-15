@@ -21,4 +21,5 @@ if (Test-Path "android") {
     Remove-Item -Recurse -Force android
 }
 
+
 npx expo run:android
