@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Screen } from '@/components/Screen';
 import { getStock, searchModels, getSession } from '@/services/api';
 import { buildEpc, type EpcDetectionMode } from '@/services/epc';
@@ -22,6 +22,7 @@ export default function StockScreen() {
 
   const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
   const [stock, setStock] = useState<StockRow[]>([]);
+  const [modelphoto, setModelphoto] = useState<string | undefined>(undefined);
   const [selectedSku, setSelectedSku] = useState('');
   const [loadingSearch, setLoadingSearch] = useState(false);
   const [loadingStock, setLoadingStock] = useState(false);
@@ -77,10 +78,12 @@ export default function StockScreen() {
     setLoadingStock(true);
     setError('');
     try {
-      const data = await getStock(sku, true);
-      setStock(data);
+      const res = await getStock(sku, true);
+      setStock(res.rows);
+      setModelphoto(res.modelphoto);
     } catch (e: any) {
       setStock([]);
+      setModelphoto(undefined);
       setError(e?.response?.data?.message ?? e?.message ?? 'No se pudo consultar stock.');
     } finally {
       setLoadingStock(false);
@@ -208,7 +211,11 @@ export default function StockScreen() {
           onPress={() => setShowDepositDropdown(!showDepositDropdown)}
         >
           <Text style={styles.depositPickerText}>
-            {session?.depositoSeleccionado?.nombre ?? 'Seleccionar Depósito'}
+            {session?.depositoSeleccionado
+              ? session.depositoSeleccionado.Sucursal
+                ? `${session.depositoSeleccionado.Sucursal} - ${session.depositoSeleccionado.nombre}`
+                : session.depositoSeleccionado.nombre
+              : 'Seleccionar Depósito'}
           </Text>
           <Ionicons
             name={showDepositDropdown ? "chevron-up" : "chevron-down"}
@@ -219,28 +226,31 @@ export default function StockScreen() {
 
         {showDepositDropdown && (
           <View style={styles.dropdownList}>
-            {(session?.depositos ?? []).map((dep) => (
-              <Pressable
-                key={dep.uuid}
-                style={[
-                  styles.dropdownItem,
-                  session?.depositoSeleccionado?.uuid === dep.uuid && styles.dropdownItemActive
-                ]}
-                onPress={() => handleSelectDeposit(dep)}
-              >
-                <Text
+            {(session?.depositos ?? []).map((dep) => {
+              const label = dep.Sucursal ? `${dep.Sucursal} - ${dep.nombre}` : dep.nombre;
+              return (
+                <Pressable
+                  key={dep.uuid}
                   style={[
-                    styles.dropdownItemText,
-                    session?.depositoSeleccionado?.uuid === dep.uuid && styles.dropdownItemTextActive
+                    styles.dropdownItem,
+                    session?.depositoSeleccionado?.uuid === dep.uuid && styles.dropdownItemActive
                   ]}
+                  onPress={() => handleSelectDeposit(dep)}
                 >
-                  {dep.nombre}
-                </Text>
-                {session?.depositoSeleccionado?.uuid === dep.uuid && (
-                  <Ionicons name="checkmark" size={18} color="#0b63ce" />
-                )}
-              </Pressable>
-            ))}
+                  <Text
+                    style={[
+                      styles.dropdownItemText,
+                      session?.depositoSeleccionado?.uuid === dep.uuid && styles.dropdownItemTextActive
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                  {session?.depositoSeleccionado?.uuid === dep.uuid && (
+                    <Ionicons name="checkmark" size={18} color="#0b63ce" />
+                  )}
+                </Pressable>
+              );
+            })}
           </View>
         )}
       </View>
@@ -348,23 +358,16 @@ export default function StockScreen() {
         </View>
       )}
 
-      <FlatList
-        data={stock}
-        keyExtractor={(item, index) => `${item.sku}-${item.skucolor}-${item.skusize}-${index}`}
-        contentContainerStyle={{ paddingTop: 12, paddingBottom: 20 }}
-        renderItem={({ item }) => (
-          <StockCard
-            item={item}
-            detecting={detection?.epc}
-            onDetect={(mode) => startDetection(item, mode)}
-          />
-        )}
-        ListEmptyComponent={
-          !loadingStock && selectedSku ? (
-            <Text style={styles.empty}>Sin stock para el SKU consultado en el depósito activo.</Text>
-          ) : undefined
-        }
-      />
+      {!loadingStock && stock.length > 0 ? (
+        <GroupedStockCard
+          stock={stock}
+          modelphoto={modelphoto}
+          detecting={detection?.epc}
+          onDetect={(item, mode) => startDetection(item, mode)}
+        />
+      ) : !loadingStock && selectedSku ? (
+        <Text style={styles.empty}>Sin stock para el SKU consultado en el depósito activo.</Text>
+      ) : null}
     </Screen>
   );
 }
@@ -374,64 +377,163 @@ function extractSku(model: string): string | null {
   return match?.[1]?.trim() || null;
 }
 
-function StockCard({
-  item,
-  onDetect,
+function GroupedStockCard({
+  stock,
+  modelphoto,
   detecting,
+  onDetect,
 }: {
-  item: StockRow;
-  onDetect: (mode: EpcDetectionMode) => void;
+  stock: StockRow[];
+  modelphoto?: string;
   detecting?: string;
+  onDetect: (item: StockRow, mode: EpcDetectionMode) => void;
 }) {
-  const imageUri = getImageUri(item.image);
+  const colors = Array.from(new Set(stock.map((s) => s.colordesc || s.skucolor)));
+  const [userSelectedColor, setUserSelectedColor] = useState<string | null>(null);
+
+  const activeColor = (userSelectedColor && colors.includes(userSelectedColor))
+    ? userSelectedColor
+    : (colors[0] || '');
+
+  const rowsForColor = stock.filter((s) => (s.colordesc || s.skucolor) === activeColor);
+
+  const sizes = Array.from(new Set(rowsForColor.map((s) => s.sizedesc || s.skusize)));
+  const [userSelectedSize, setUserSelectedSize] = useState<string | null>(null);
+
+  const activeSize = (userSelectedSize && sizes.includes(userSelectedSize))
+    ? userSelectedSize
+    : (sizes[0] || '');
+
+  const activeRow = rowsForColor.find((s) => (s.sizedesc || s.skusize) === activeSize) || rowsForColor[0] || stock[0];
+
+  const title = activeRow?.skuDescription || activeRow?.sku || 'Producto';
+  const rawImage = modelphoto || activeRow?.modelphoto || activeRow?.image;
+  const imageUri = getImageUri(rawImage);
 
   return (
-    <View style={styles.card}>
-      <View style={styles.imageWrap}>
-        {imageUri ? (
-          <Image
-            source={{ uri: imageUri }}
-            style={styles.productImage}
-            resizeMode="cover"
-            accessibilityLabel={`Imagen de ${item.sku}`}
-          />
-        ) : (
-          <View style={styles.imagePlaceholder}>
-            <Ionicons name="image-outline" size={30} color="#98a2b3" />
-          </View>
-        )}
-      </View>
+    <View style={styles.cardContainer}>
+      {/* Top Header Row with Photo & Details */}
+      <View style={styles.topRow}>
+        <View style={styles.imageWrapLarge}>
+          {imageUri ? (
+            <Image
+              source={{ uri: imageUri }}
+              style={styles.productImageLarge}
+              resizeMode="cover"
+              accessibilityLabel={`Imagen de ${title}`}
+            />
+          ) : (
+            <View style={styles.imagePlaceholderLarge}>
+              <Ionicons name="image-outline" size={40} color="#98a2b3" />
+            </View>
+          )}
+        </View>
 
-      <View style={styles.productInfo}>
-        <Text style={styles.sku} numberOfLines={1}>{item.sku}</Text>
-        <Text style={styles.model} numberOfLines={1}>
-          {item.colordesc || item.skucolor} · {item.sizedesc || item.skusize}
-        </Text>
-        <Text style={styles.rfid} numberOfLines={1}>
-          RFID: {item.modelrfid}
-        </Text>
+        <View style={styles.detailsCol}>
+          <Text style={styles.productTitle}>{title}</Text>
+          <Text style={styles.colorSubtitle}>
+            Color: <Text style={styles.colorValue}>{activeColor || activeRow?.skucolor}</Text>
+          </Text>
 
-        <View style={styles.detectActions}>
-          <DetectButton icon="radio-outline" label="Modelo" onPress={() => onDetect('model')} />
-          <DetectButton
-            icon="color-filter-outline"
-            label="Color"
-            disabled={!item.modelcolrfid}
-            onPress={() => onDetect('color')}
-          />
-          <DetectButton
-            icon="resize-outline"
-            label="Talle"
-            disabled={!item.modelsizfid}
-            onPress={() => onDetect('size')}
-          />
+          {colors.length > 1 && (
+            <View style={styles.colorPickerRow}>
+              {colors.map((c) => (
+                <Pressable
+                  key={c}
+                  style={[styles.colorChip, activeColor === c && styles.colorChipActive]}
+                  onPress={() => { setUserSelectedColor(c); setUserSelectedSize(null); }}
+                >
+                  <Text style={[styles.colorChipText, activeColor === c && styles.colorChipTextActive]}>
+                    {c}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+
+          {activeRow?.Oferta ? (
+            <View style={styles.ofertaBadge}>
+              <Ionicons name="pricetag" size={14} color="#b58a00" />
+              <Text style={styles.ofertaText}>En oferta</Text>
+            </View>
+          ) : null}
         </View>
       </View>
 
-      <View style={[styles.stockBadge, item.stock === 0 && styles.stockBadgeZero]}>
-        <Text style={[styles.stock, item.stock === 0 && styles.stockZero]}>{item.stock}</Text>
-        <Text style={[styles.stockLabel, item.stock === 0 && styles.stockLabelZero]}>stock</Text>
+      <View style={styles.divider} />
+
+      {/* Talles disponibles */}
+      <Text style={styles.tallesTitle}>Talles disponibles:</Text>
+      <View style={styles.tallesRow}>
+        {sizes.map((sz) => {
+          const isSelected = activeSize === sz;
+          return (
+            <Pressable
+              key={sz}
+              style={[styles.talleButton, isSelected && styles.talleButtonActive]}
+              onPress={() => setUserSelectedSize(sz)}
+            >
+              <Text style={[styles.talleText, isSelected && styles.talleTextActive]}>
+                {sz}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
+
+      {/* Detalle del talle seleccionado */}
+      {activeRow && (
+        <View style={styles.selectedSizeDetail}>
+          <Text style={styles.selectedTalleHeader}>Talle: {activeRow.sizedesc || activeRow.skusize}</Text>
+
+          <View style={styles.infoGrid}>
+            <View style={styles.infoCol}>
+              <View style={styles.iconValRow}>
+                <View style={[styles.dot, activeRow.stock > 0 ? styles.dotGreen : styles.dotRed]} />
+                <Text style={styles.infoLabel}>Stock: </Text>
+                <Text style={styles.infoValueBold}>{activeRow.stock}</Text>
+              </View>
+              {activeRow.stockInTransit !== undefined && (
+                <Text style={styles.infoSubtext}>Tránsito: {activeRow.stockInTransit}</Text>
+              )}
+            </View>
+
+            <View style={[styles.infoCol, { alignItems: 'flex-end' }]}>
+              {activeRow.precio && (
+                <Text style={styles.infoPrice}>
+                  Precio: ${activeRow.precio}
+                </Text>
+              )}
+              {activeRow.Oferta && (
+                <Text style={styles.infoOfertaPrice}>
+                  Oferta: ${activeRow.Oferta}
+                </Text>
+              )}
+            </View>
+          </View>
+
+          {/* Detección RFID Buttons */}
+          <View style={styles.detectActions}>
+            <DetectButton
+              icon="radio-outline"
+              label="Modelo"
+              onPress={() => onDetect(activeRow, 'model')}
+            />
+            <DetectButton
+              icon="color-filter-outline"
+              label="Color"
+              disabled={!activeRow.modelcolrfid}
+              onPress={() => onDetect(activeRow, 'color')}
+            />
+            <DetectButton
+              icon="resize-outline"
+              label="Talle"
+              disabled={!activeRow.modelsizfid}
+              onPress={() => onDetect(activeRow, 'size')}
+            />
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -533,5 +635,43 @@ const styles = StyleSheet.create({
 
   // Simulate button styles
   simulateButton: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, padding: 10, borderRadius: 8, backgroundColor: '#eff8ff', borderWidth: 1, borderColor: '#b2ddff', alignSelf: 'flex-start' },
-  simulateButtonText: { fontSize: 11, fontWeight: '600', color: '#0b63ce' }
+  simulateButtonText: { fontSize: 11, fontWeight: '600', color: '#0b63ce' },
+
+  // Grouped Stock Card styles
+  cardContainer: { backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 12, marginBottom: 16, borderWidth: 1, borderColor: '#eaecf0', elevation: 2 },
+  topRow: { flexDirection: 'row', gap: 14 },
+  imageWrapLarge: { width: 110, height: 130, borderRadius: 12, overflow: 'hidden', backgroundColor: '#f2f4f7' },
+  productImageLarge: { width: '100%', height: '100%' },
+  imagePlaceholderLarge: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  detailsCol: { flex: 1, justifyContent: 'flex-start' },
+  productTitle: { fontSize: 20, fontWeight: '800', color: '#022449', letterSpacing: 0.5 },
+  colorSubtitle: { fontSize: 14, color: '#475467', marginTop: 4 },
+  colorValue: { fontWeight: '700', color: '#101828' },
+  colorPickerRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  colorChip: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: '#f2f4f7', borderWidth: 1, borderColor: '#d0d5dd' },
+  colorChipActive: { backgroundColor: '#022449', borderColor: '#022449' },
+  colorChipText: { fontSize: 11, color: '#344054' },
+  colorChipTextActive: { color: '#fff', fontWeight: '700' },
+  ofertaBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#fffbeb', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, borderWidth: 1, borderColor: '#fef08a', alignSelf: 'flex-start', marginTop: 10 },
+  ofertaText: { fontSize: 12, fontWeight: '700', color: '#b58a00' },
+  divider: { height: 1, backgroundColor: '#eaecf0', marginVertical: 14 },
+  tallesTitle: { fontSize: 14, fontWeight: '700', color: '#101828', marginBottom: 10 },
+  tallesRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  talleButton: { width: 48, height: 40, borderRadius: 10, backgroundColor: '#f2f4f7', borderWidth: 1, borderColor: '#d0d5dd', justifyContent: 'center', alignItems: 'center' },
+  talleButtonActive: { backgroundColor: '#2080d0', borderColor: '#2080d0' },
+  talleText: { fontSize: 14, fontWeight: '600', color: '#344054' },
+  talleTextActive: { color: '#fff', fontWeight: '800' },
+  selectedSizeDetail: { backgroundColor: '#f9fafb', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#f2f4f7', marginTop: 4 },
+  selectedTalleHeader: { fontSize: 15, fontWeight: '700', color: '#101828', marginBottom: 8 },
+  infoGrid: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  infoCol: { gap: 2 },
+  iconValRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  dot: { width: 10, height: 10, borderRadius: 5 },
+  dotGreen: { backgroundColor: '#12b76a' },
+  dotRed: { backgroundColor: '#f04438' },
+  infoLabel: { fontSize: 14, color: '#475467' },
+  infoValueBold: { fontSize: 16, fontWeight: '800', color: '#101828' },
+  infoSubtext: { fontSize: 12, color: '#667085' },
+  infoPrice: { fontSize: 14, color: '#475467', fontWeight: '600' },
+  infoOfertaPrice: { fontSize: 15, color: '#b58a00', fontWeight: '800' }
 });

@@ -16,4 +16,9 @@ $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 Write-Host "JAVA_HOME = $env:JAVA_HOME"
 java -version
 
+if (Test-Path "android") {
+    Write-Host "Limpiando directorio android existente..."
+    Remove-Item -Recurse -Force android
+}
+
 npx expo run:android
