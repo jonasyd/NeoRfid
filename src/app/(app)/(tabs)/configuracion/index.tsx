@@ -6,11 +6,15 @@ import ChafonH103, { type ChafonDevice } from '@modules/chafon-h103';
 import { useSession } from '@/context/SessionContext';
 import { getSavedApiBaseUrl, saveApiBaseUrl } from '@/services/api';
 
+const DEFAULT_SERVICE_UUID = '0000fee7-0000-1000-8000-00805f9b34fb';
+const DEFAULT_NOTIFY_UUID = '000036f1-0000-1000-8000-00805f9b34fb';
+const DEFAULT_WRITE_UUID = '000036f2-0000-1000-8000-00805f9b34fb';
+
 export default function ConfiguracionScreen() {
   const { session } = useSession();
-  const [serviceUuid, setServiceUuid] = useState('');
-  const [notifyUuid, setNotifyUuid] = useState('');
-  const [writeUuid, setWriteUuid] = useState('');
+  const [serviceUuid, setServiceUuid] = useState(DEFAULT_SERVICE_UUID);
+  const [notifyUuid, setNotifyUuid] = useState(DEFAULT_NOTIFY_UUID);
+  const [writeUuid, setWriteUuid] = useState(DEFAULT_WRITE_UUID);
   const [supported, setSupported] = useState<boolean | null>(null);
   const [devices, setDevices] = useState<ChafonDevice[]>([]);
   const [scanning, setScanning] = useState(false);
@@ -69,10 +73,12 @@ export default function ConfiguracionScreen() {
     await ChafonH103.initialize();
   }
 
-  async function prepareConnection() {
-    if (!serviceUuid || !notifyUuid || !writeUuid) throw new Error('Completá los tres UUID BLE del H103.');
+  async function prepareConnection(s = serviceUuid, n = notifyUuid, w = writeUuid) {
+    const finalS = s || DEFAULT_SERVICE_UUID;
+    const finalN = n || DEFAULT_NOTIFY_UUID;
+    const finalW = w || DEFAULT_WRITE_UUID;
     await initialize();
-    await ChafonH103.configureCharacteristics(serviceUuid, notifyUuid, writeUuid);
+    await ChafonH103.configureCharacteristics(finalS, finalN, finalW);
   }
 
   async function scan() {
@@ -91,7 +97,7 @@ export default function ConfiguracionScreen() {
   async function connect() {
     try {
       await prepareConnection();
-      Alert.alert('CHAFON', 'SDK inicializado y UUID configurados.');
+      Alert.alert('CHAFON', 'SDK inicializado.');
     } catch (e: any) {
       Alert.alert('CHAFON', e?.message ?? 'No se pudo inicializar.');
     }
@@ -154,25 +160,17 @@ export default function ConfiguracionScreen() {
           </Pressable>
         </View>
 
-        <Text style={styles.section}>CHAFON H103 - Configuración BLE</Text>
+        <Text style={styles.section}>Conexión a Terminal RFID (BLE)</Text>
         <Text style={styles.status}>
-          SDK Android: {supported === null ? 'consultando…' : supported ? 'compatible' : 'no disponible'}
+          Estado de Terminal: <Text style={{ fontWeight: '700', color: connection === 'connected' ? '#12b76a' : '#f04438' }}>{connection === 'connected' ? 'Conectado' : 'Desconectado'}</Text>
         </Text>
-        <Text style={styles.help}>Los UUID BLE deben confirmarse con el H103/firmware.</Text>
-        <TextInput style={styles.input} placeholder="Service UUID" value={serviceUuid} onChangeText={setServiceUuid} autoCapitalize="none" />
-        <TextInput style={styles.input} placeholder="Notify Characteristic UUID" value={notifyUuid} onChangeText={setNotifyUuid} autoCapitalize="none" />
-        <TextInput style={styles.input} placeholder="Write Characteristic UUID" value={writeUuid} onChangeText={setWriteUuid} autoCapitalize="none" />
+        <Text style={styles.help}>Presione &quot;Buscar Terminales&quot; para detectar automáticamente el lector Chafon H103 vía BLE.</Text>
 
         <View style={styles.actions}>
           <Pressable style={styles.button} onPress={scan}>
-            <Text style={styles.buttonText}>{scanning ? 'Buscando…' : 'Buscar H103'}</Text>
-          </Pressable>
-          <Pressable style={[styles.button, styles.secondary]} onPress={connect}>
-            <Text style={styles.secondaryText}>Inicializar</Text>
+            <Text style={styles.buttonText}>{scanning ? 'Buscando Terminales…' : 'Buscar Terminales BLE'}</Text>
           </Pressable>
         </View>
-
-        <Text style={styles.status}>Conexión: {connection}</Text>
 
         {devices.map((device) => (
           <Pressable
@@ -188,9 +186,16 @@ export default function ConfiguracionScreen() {
             }}
           >
             <View style={{ flex: 1 }}>
-              <Text style={styles.deviceName}>{device.name || 'Dispositivo sin nombre'}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={styles.deviceName}>{device.name || 'Dispositivo sin nombre'}</Text>
+                {device.isBonded && (
+                  <View style={styles.bondedBadge}>
+                    <Text style={styles.bondedText}>Vinculado</Text>
+                  </View>
+                )}
+              </View>
               <Text style={styles.deviceMeta}>
-                {device.address} · RSSI {device.rssi}{device.isCfDevice ? ' · CHAFON' : ''}
+                {device.address} {device.rssi ? `· RSSI ${device.rssi}` : ''}{device.isCfDevice ? ' · CHAFON' : ''}
               </Text>
             </View>
             <Ionicons name="bluetooth-outline" size={22} color="#0b63ce" />
@@ -236,6 +241,8 @@ const styles = StyleSheet.create({
   logoutText: { color: '#d92d20', fontWeight: '700' },
   urlContainer: { flexDirection: 'row', gap: 8, alignItems: 'center', marginBottom: 10 },
   saveUrlButton: { backgroundColor: '#0b63ce', width: 46, height: 46, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+  bondedBadge: { backgroundColor: '#eff8ff', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#b2ddff' },
+  bondedText: { fontSize: 10, fontWeight: '700', color: '#0b63ce' },
   toolsContainer: { flexDirection: 'row', gap: 10, marginTop: 5 },
   toolButton: { flex: 1, backgroundColor: '#fff', padding: 12, borderRadius: 10, alignItems: 'center', gap: 6, borderWidth: 1, borderColor: '#eaecf0' },
   toolButtonText: { fontSize: 12, fontWeight: '600', color: '#344054' },

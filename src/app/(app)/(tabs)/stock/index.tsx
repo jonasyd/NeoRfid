@@ -1,9 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { Screen } from '@/components/Screen';
 import { getStock, searchModels, getSession } from '@/services/api';
-import { buildEpc, type EpcDetectionMode } from '@/services/epc';
+import { buildEpc, stringToHex, type EpcDetectionMode } from '@/services/epc';
 import type { SearchResult, StockRow, Deposito } from '@/types/api';
 import ChafonH103, { type ChafonTag } from '@modules/chafon-h103';
 import { useSession } from '@/context/SessionContext';
@@ -34,6 +34,9 @@ export default function StockScreen() {
 
   // Calibración de potencia (0 - 30 dBm)
   const [rfidPower, setRfidPower] = useState(20);
+
+  // Filtro de conStock (default: false)
+  const [conStockFilter, setConStockFilter] = useState(false);
 
   const requestId = useRef(0);
   const inputRef = useRef<any>(null);
@@ -74,11 +77,11 @@ export default function StockScreen() {
     return () => clearTimeout(timer);
   }, [query, searchMode]);
 
-  async function loadStockForSku(sku: string) {
+  async function loadStockForSku(sku: string, constockParam = conStockFilter) {
     setLoadingStock(true);
     setError('');
     try {
-      const res = await getStock(sku, true);
+      const res = await getStock(sku, constockParam);
       setStock(res.rows);
       setModelphoto(res.modelphoto);
     } catch (e: any) {
@@ -90,16 +93,16 @@ export default function StockScreen() {
     }
   }
 
-  // Si cambia el depósito seleccionado o el SKU activo, volver a cargar el stock
+  // Si cambia el depósito seleccionado, el SKU activo o la opción conStock, volver a cargar el stock
   const activeDepositUuid = session?.depositoSeleccionado?.uuid;
   useEffect(() => {
     if (selectedSku) {
       const timer = setTimeout(() => {
-        loadStockForSku(selectedSku);
+        loadStockForSku(selectedSku, conStockFilter);
       }, 0);
       return () => clearTimeout(timer);
     }
-  }, [activeDepositUuid, selectedSku]);
+  }, [activeDepositUuid, selectedSku, conStockFilter]);
 
   async function loadSku(sku: string) {
     setSelectedSku(sku);
@@ -146,11 +149,13 @@ export default function StockScreen() {
   }
 
   async function handleSelect(result: SearchResult) {
-    const sku = extractSku(result.model);
+    const rawSku = (result as any).sku || (result as any).SKU;
+    const sku = rawSku?.trim() || extractSku(result.model) || result.model?.trim();
     if (!sku) {
       setError('La respuesta de search no contiene un SKU reconocible.');
       return;
     }
+    setSuggestions([]);
     await loadSku(sku);
   }
 
@@ -164,6 +169,8 @@ export default function StockScreen() {
         modelcolrfid: row.modelcolrfid,
         modelsizfid: row.modelsizfid,
       }, mode).epc;
+
+      await ChafonH103.setSoundEnabled(false);
       await ChafonH103.startDetection(epc, 0, 100);
       setDetection({ mode, epc, running: true });
       setError('');
@@ -176,6 +183,7 @@ export default function StockScreen() {
     try {
       await ChafonH103.stopInventory();
       await ChafonH103.clearDetectionMask();
+      await ChafonH103.setSoundEnabled(true);
     } finally {
       setDetection(null);
     }
@@ -194,13 +202,15 @@ export default function StockScreen() {
   // Calibración de potencia RFID Chafon (+/-)
   function adjustPower(amount: number) {
     setRfidPower((prev) => {
-      const next = prev + amount;
-      return Math.max(0, Math.min(30, next));
+      const next = Math.max(0, Math.min(30, prev + amount));
+      ChafonH103.setPower(next).catch(() => undefined);
+      return next;
     });
   }
 
   return (
     <Screen>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>BÚSQUEDA DE ITEMS</Text>
 
       {/* Selector de Depósitos (Combo Box Customizado) */}
@@ -255,20 +265,32 @@ export default function StockScreen() {
         )}
       </View>
 
-      {/* Sección de Calibración de Potencia RFID */}
-      <View style={styles.calibrationCard}>
-        <View style={styles.calibrationHeader}>
-          <Ionicons name="flash-outline" size={18} color="#0b63ce" />
-          <Text style={styles.calibrationTitle}>Calibración de Potencia RFID</Text>
+      {/* Ajustar potencia RFID y opción Con Stock */}
+      <View style={styles.configRowContainer}>
+        <View style={[styles.calibrationCard, { flex: 1, marginBottom: 0 }]}>
+          <View style={styles.calibrationHeader}>
+            <Ionicons name="flash-outline" size={18} color="#0b63ce" />
+            <Text style={styles.calibrationTitle}>Ajustar potencia RFID</Text>
+          </View>
+          <View style={styles.calibrationControls}>
+            <Pressable style={styles.calibButton} onPress={() => adjustPower(-1)}>
+              <Text style={styles.calibButtonText}>-</Text>
+            </Pressable>
+            <Text style={styles.calibValue}>{rfidPower} dBm</Text>
+            <Pressable style={styles.calibButton} onPress={() => adjustPower(1)}>
+              <Text style={styles.calibButtonText}>+</Text>
+            </Pressable>
+          </View>
         </View>
-        <View style={styles.calibrationControls}>
-          <Pressable style={styles.calibButton} onPress={() => adjustPower(-1)}>
-            <Text style={styles.calibButtonText}>-</Text>
-          </Pressable>
-          <Text style={styles.calibValue}>{rfidPower} dBm</Text>
-          <Pressable style={styles.calibButton} onPress={() => adjustPower(1)}>
-            <Text style={styles.calibButtonText}>+</Text>
-          </Pressable>
+
+        <View style={[styles.conStockCard]}>
+          <Text style={styles.conStockTitle}>Sólo con stock</Text>
+          <Switch
+            value={conStockFilter}
+            onValueChange={setConStockFilter}
+            trackColor={{ false: '#d0d5dd', true: '#b2ddff' }}
+            thumbColor={conStockFilter ? '#0b63ce' : '#f2f4f7'}
+          />
         </View>
       </View>
 
@@ -277,12 +299,12 @@ export default function StockScreen() {
         <Text style={styles.modeText}>
           Modo actual:{' '}
           <Text style={styles.modeActive}>
-            {searchMode === 'barcode' ? 'Lectura Barcode/SKU' : 'Búsqueda Texto/Query'}
+            {searchMode === 'barcode' ? 'Búsqueda por SKU' : 'Búsqueda por descripción'}
           </Text>
         </Text>
         {searchMode === 'barcode' && (
           <Pressable style={styles.resetModeButton} onPress={() => { setSearchMode('text'); setQuery(''); }}>
-            <Text style={styles.resetModeButtonText}>Volver a Texto</Text>
+            <Text style={styles.resetModeButtonText}>Volver a Descripción</Text>
           </Pressable>
         )}
       </View>
@@ -306,8 +328,8 @@ export default function StockScreen() {
         </Pressable>
       </View>
 
-      {/* Simulador de Escaneo de Barcode para facilitar pruebas automatizadas */}
-      {searchMode === 'barcode' && (
+      {/* Simulador de Escaneo de Barcode solo visible para el usuario NEOADMIN */}
+      {searchMode === 'barcode' && session?.username?.toUpperCase() === 'NEOADMIN' && (
         <Pressable
           style={styles.simulateButton}
           onPress={() => {
@@ -368,13 +390,18 @@ export default function StockScreen() {
       ) : !loadingStock && selectedSku ? (
         <Text style={styles.empty}>Sin stock para el SKU consultado en el depósito activo.</Text>
       ) : null}
+      </ScrollView>
     </Screen>
   );
 }
 
-function extractSku(model: string): string | null {
+function extractSku(model?: string): string | null {
+  if (!model) return null;
   const match = model.match(/\(([^)]+)\)\s*$/);
-  return match?.[1]?.trim() || null;
+  if (match?.[1]?.trim()) {
+    return match[1].trim();
+  }
+  return model.trim() || null;
 }
 
 function GroupedStockCard({
@@ -390,6 +417,7 @@ function GroupedStockCard({
 }) {
   const colors = Array.from(new Set(stock.map((s) => s.colordesc || s.skucolor)));
   const [userSelectedColor, setUserSelectedColor] = useState<string | null>(null);
+  const [showRfidDetails, setShowRfidDetails] = useState(false);
 
   const activeColor = (userSelectedColor && colors.includes(userSelectedColor))
     ? userSelectedColor
@@ -409,6 +437,38 @@ function GroupedStockCard({
   const title = activeRow?.skuDescription || activeRow?.sku || 'Producto';
   const rawImage = modelphoto || activeRow?.modelphoto || activeRow?.image;
   const imageUri = getImageUri(rawImage);
+
+  const sess = getSession();
+  const brandPrefix = sess?.brandPrefix || '';
+
+  const modelHexField = activeRow?.modelrfid ? stringToHex(activeRow.modelrfid) : '';
+  const colorHexField = activeRow?.modelcolrfid ? stringToHex(activeRow.modelcolrfid) : '';
+  const sizeHexField = activeRow?.modelsizfid ? stringToHex(activeRow.modelsizfid) : '';
+
+  let modelEpcHex = '';
+  let colorEpcHex = '';
+  let sizeEpcHex = '';
+
+  if (activeRow) {
+    try {
+      if (activeRow.modelrfid) {
+        modelEpcHex = buildEpc({
+          brandPrefix,
+          modelrfid: activeRow.modelrfid,
+          modelcolrfid: activeRow.modelcolrfid,
+          modelsizfid: activeRow.modelsizfid,
+        }, 'model').epc;
+      }
+      if (activeRow.modelrfid && activeRow.modelcolrfid) {
+        colorEpcHex = buildEpc({ brandPrefix, modelrfid: activeRow.modelrfid, modelcolrfid: activeRow.modelcolrfid }, 'color').epc;
+      }
+      if (activeRow.modelrfid && activeRow.modelsizfid) {
+        sizeEpcHex = buildEpc({ brandPrefix, modelrfid: activeRow.modelrfid, modelsizfid: activeRow.modelsizfid }, 'size').epc;
+      }
+    } catch {
+      // Ignore HEX computation errors for display
+    }
+  }
 
   return (
     <View style={styles.cardContainer}>
@@ -437,17 +497,33 @@ function GroupedStockCard({
 
           {colors.length > 1 && (
             <View style={styles.colorPickerRow}>
-              {colors.map((c) => (
-                <Pressable
-                  key={c}
-                  style={[styles.colorChip, activeColor === c && styles.colorChipActive]}
-                  onPress={() => { setUserSelectedColor(c); setUserSelectedSize(null); }}
-                >
-                  <Text style={[styles.colorChipText, activeColor === c && styles.colorChipTextActive]}>
-                    {c}
-                  </Text>
-                </Pressable>
-              ))}
+              {colors.map((c) => {
+                const colorStock = stock.filter((s) => (s.colordesc || s.skucolor) === c).reduce((acc, curr) => acc + curr.stock, 0);
+                const hasStock = colorStock > 0;
+                const isSelected = activeColor === c;
+
+                return (
+                  <Pressable
+                    key={c}
+                    style={[
+                      styles.colorChip,
+                      hasStock ? styles.colorChipSolid : styles.colorChipDashed,
+                      isSelected && (hasStock ? styles.colorChipActive : styles.colorChipDashedActive)
+                    ]}
+                    onPress={() => { setUserSelectedColor(c); setUserSelectedSize(null); }}
+                  >
+                    <Text
+                      style={[
+                        styles.colorChipText,
+                        hasStock ? styles.textGreen : styles.textRed,
+                        isSelected && styles.colorChipTextActive
+                      ]}
+                    >
+                      {c}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
           )}
 
@@ -466,14 +542,28 @@ function GroupedStockCard({
       <Text style={styles.tallesTitle}>Talles disponibles:</Text>
       <View style={styles.tallesRow}>
         {sizes.map((sz) => {
+          const rowForSz = rowsForColor.find((s) => (s.sizedesc || s.skusize) === sz);
+          const szStock = rowForSz ? rowForSz.stock : 0;
+          const hasStock = szStock > 0;
           const isSelected = activeSize === sz;
+
           return (
             <Pressable
               key={sz}
-              style={[styles.talleButton, isSelected && styles.talleButtonActive]}
+              style={[
+                styles.talleButton,
+                hasStock ? styles.talleSolid : styles.talleDashed,
+                isSelected && (hasStock ? styles.talleButtonActive : styles.talleDashedActive)
+              ]}
               onPress={() => setUserSelectedSize(sz)}
             >
-              <Text style={[styles.talleText, isSelected && styles.talleTextActive]}>
+              <Text
+                style={[
+                  styles.talleText,
+                  hasStock ? styles.textGreen : styles.textRed,
+                  isSelected && styles.talleTextActive
+                ]}
+              >
                 {sz}
               </Text>
             </Pressable>
@@ -491,7 +581,9 @@ function GroupedStockCard({
               <View style={styles.iconValRow}>
                 <View style={[styles.dot, activeRow.stock > 0 ? styles.dotGreen : styles.dotRed]} />
                 <Text style={styles.infoLabel}>Stock: </Text>
-                <Text style={styles.infoValueBold}>{activeRow.stock}</Text>
+                <Text style={[styles.infoValueBold, activeRow.stock > 0 ? styles.textGreen : styles.textRed]}>
+                  {activeRow.stock}
+                </Text>
               </View>
               {activeRow.stockInTransit !== undefined && (
                 <Text style={styles.infoSubtext}>Tránsito: {activeRow.stockInTransit}</Text>
@@ -512,26 +604,60 @@ function GroupedStockCard({
             </View>
           </View>
 
-          {/* Detección RFID Buttons */}
+          {/* Detección RFID Icons (Remera, Paleta de Colores, Regla) */}
           <View style={styles.detectActions}>
             <DetectButton
-              icon="radio-outline"
+              icon="shirt-outline"
               label="Modelo"
               onPress={() => onDetect(activeRow, 'model')}
             />
             <DetectButton
-              icon="color-filter-outline"
+              icon="color-palette-outline"
               label="Color"
               disabled={!activeRow.modelcolrfid}
               onPress={() => onDetect(activeRow, 'color')}
             />
             <DetectButton
-              icon="resize-outline"
+              icon="options-outline"
               label="Talle"
               disabled={!activeRow.modelsizfid}
               onPress={() => onDetect(activeRow, 'size')}
             />
           </View>
+
+          {/* Acordeón para Códigos RFID e Identificadores HEX (Contraído por defecto) */}
+          <Pressable
+            style={styles.accordionHeader}
+            onPress={() => setShowRfidDetails(!showRfidDetails)}
+          >
+            <Ionicons name="hardware-chip-outline" size={16} color="#475467" />
+            <Text style={styles.accordionTitle}>Detalle Códigos e Identificadores EPC (HEX)</Text>
+            <Ionicons name={showRfidDetails ? "chevron-up" : "chevron-down"} size={16} color="#475467" />
+          </Pressable>
+
+          {showRfidDetails && (
+            <View style={styles.accordionBody}>
+              <Text style={styles.rfidCodeText}>
+                modelrfid: <Text style={styles.codeVal}>{activeRow.modelrfid || '-'}</Text> {modelHexField ? <Text style={styles.codeValHex}>({modelHexField})</Text> : null}
+              </Text>
+              <Text style={styles.rfidCodeText}>
+                modelcolrfid: <Text style={styles.codeVal}>{activeRow.modelcolrfid || '-'}</Text> {colorHexField ? <Text style={styles.codeValHex}>({colorHexField})</Text> : null}
+              </Text>
+              <Text style={styles.rfidCodeText}>
+                modelsizfid: <Text style={styles.codeVal}>{activeRow.modelsizfid || '-'}</Text> {sizeHexField ? <Text style={styles.codeValHex}>({sizeHexField})</Text> : null}
+              </Text>
+              <View style={{ height: 1, backgroundColor: '#eaecf0', marginVertical: 6 }} />
+              <Text style={styles.rfidCodeText}>
+                EPC Modelo (HEX): <Text style={styles.codeValHex}>{modelEpcHex || '-'}</Text>
+              </Text>
+              <Text style={styles.rfidCodeText}>
+                EPC Color (HEX): <Text style={styles.codeValHex}>{colorEpcHex || '-'}</Text>
+              </Text>
+              <Text style={styles.rfidCodeText}>
+                EPC Talle (HEX): <Text style={styles.codeValHex}>{sizeEpcHex || '-'}</Text>
+              </Text>
+            </View>
+          )}
         </View>
       )}
     </View>
@@ -571,6 +697,7 @@ function DetectButton({
 }
 
 const styles = StyleSheet.create({
+  scrollContent: { paddingBottom: 32 },
   title: { fontSize: 24, fontWeight: '700', color: '#101828', marginTop: 8, marginBottom: 12 },
   searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#d0d5dd', paddingLeft: 12, minHeight: 50 },
   input: { flex: 1, paddingHorizontal: 10, color: '#101828', fontSize: 15 },
@@ -617,14 +744,35 @@ const styles = StyleSheet.create({
   dropdownItemText: { fontSize: 13, color: '#344054' },
   dropdownItemTextActive: { fontWeight: '700', color: '#0b63ce' },
 
-  // Power calibration styles
-  calibrationCard: { backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#eaecf0', marginBottom: 12 },
-  calibrationHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
-  calibrationTitle: { fontSize: 13, fontWeight: '700', color: '#344054' },
-  calibrationControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20, paddingVertical: 4 },
-  calibButton: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: '#d0d5dd', backgroundColor: '#f9fafb', justifyContent: 'center', alignItems: 'center' },
-  calibButtonText: { fontSize: 18, fontWeight: '600', color: '#101828' },
-  calibValue: { fontSize: 15, fontWeight: '700', color: '#0b63ce', minWidth: 60, textAlign: 'center' },
+  // Config Row styles (Power calibration & Con Stock filter)
+  configRowContainer: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+  calibrationCard: { backgroundColor: '#fff', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: '#eaecf0' },
+  calibrationHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  calibrationTitle: { fontSize: 12, fontWeight: '700', color: '#344054' },
+  calibrationControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, paddingVertical: 2 },
+  calibButton: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, borderColor: '#d0d5dd', backgroundColor: '#f9fafb', justifyContent: 'center', alignItems: 'center' },
+  calibButtonText: { fontSize: 16, fontWeight: '600', color: '#101828' },
+  calibValue: { fontSize: 13, fontWeight: '700', color: '#0b63ce', minWidth: 50, textAlign: 'center' },
+  conStockCard: { width: 110, backgroundColor: '#fff', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: '#eaecf0', alignItems: 'center', justifyContent: 'center', gap: 4 },
+  conStockTitle: { fontSize: 11, fontWeight: '700', color: '#344054', textAlign: 'center' },
+
+  // Solid & Dashed stock styles
+  colorChipSolid: { borderWidth: 1, borderColor: '#12b76a' },
+  colorChipDashed: { borderWidth: 1, borderColor: '#f04438', borderStyle: 'dashed' },
+  colorChipDashedActive: { backgroundColor: '#f04438', borderColor: '#f04438' },
+  talleSolid: { borderWidth: 1, borderColor: '#12b76a' },
+  talleDashed: { borderWidth: 1, borderColor: '#f04438', borderStyle: 'dashed' },
+  talleDashedActive: { backgroundColor: '#f04438', borderColor: '#f04438' },
+  textGreen: { color: '#027a48', fontWeight: '700' },
+  textRed: { color: '#b42318', fontWeight: '700' },
+
+  // Accordion details styles
+  accordionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#eaecf0' },
+  accordionTitle: { flex: 1, fontSize: 12, fontWeight: '700', color: '#344054' },
+  accordionBody: { marginTop: 8, backgroundColor: '#f8fafc', padding: 10, borderRadius: 8, borderWidth: 1, borderColor: '#e2e8f0' },
+  rfidCodeText: { fontSize: 11, color: '#475467', marginVertical: 1 },
+  codeVal: { fontWeight: '700', color: '#0f172a' },
+  codeValHex: { fontWeight: '700', color: '#0284c7', fontFamily: 'monospace' },
 
   // Mode select styles
   modeContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, marginTop: 4 },

@@ -6,6 +6,7 @@ export type ChafonDevice = {
   address: string;
   rssi: number;
   isCfDevice: boolean;
+  isBonded?: boolean;
 };
 
 export type ChafonTag = {
@@ -30,6 +31,8 @@ export interface ChafonH103NativeModule {
   isConnected(): boolean;
   startInventory(mode: number, intervalMs: number): Promise<void>;
   stopInventory(): Promise<void>;
+  setPower(powerDbm: number): Promise<void>;
+  setSoundEnabled(enabled: boolean): Promise<void>;
   startDetection(epc: string, mode?: number, intervalMs?: number): Promise<void>;
   clearDetectionMask(): Promise<void>;
   getBattery(): Promise<number>;
@@ -54,6 +57,8 @@ try {
     isConnected: () => false,
     startInventory: async () => {},
     stopInventory: async () => {},
+    setPower: async () => {},
+    setSoundEnabled: async () => {},
     startDetection: async () => {},
     clearDetectionMask: async () => {},
     getBattery: async () => 85,
@@ -142,6 +147,20 @@ const ChafonH103 = {
   stopInventory: () => {
     try {
       return Native.stopInventory();
+    } catch {
+      return Promise.resolve();
+    }
+  },
+  setPower: (powerDbm: number) => {
+    try {
+      return Native.setPower(powerDbm);
+    } catch {
+      return Promise.resolve();
+    }
+  },
+  setSoundEnabled: (enabled: boolean) => {
+    try {
+      return Native.setSoundEnabled(enabled);
     } catch {
       return Promise.resolve();
     }

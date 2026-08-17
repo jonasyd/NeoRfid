@@ -13,12 +13,15 @@ export default function DepositoScreen() {
       <FlatList
         data={session?.depositos ?? []}
         keyExtractor={(item) => item.uuid}
-        renderItem={({ item }) => (
-          <Pressable style={styles.item} onPress={async () => { await setDeposito(item); router.replace('/(app)/(tabs)'); }}>
-            <View><Text style={styles.name}>{item.nombre}</Text><Text style={styles.uuid}>{item.uuid}</Text></View>
-            <Text style={styles.arrow}>›</Text>
-          </Pressable>
-        )}
+        renderItem={({ item }) => {
+          const displayName = item.Sucursal ? `${item.Sucursal} - ${item.nombre}` : item.nombre;
+          return (
+            <Pressable style={styles.item} onPress={async () => { await setDeposito(item); router.replace('/(app)/(tabs)'); }}>
+              <View><Text style={styles.name}>{displayName}</Text><Text style={styles.uuid}>{item.uuid}</Text></View>
+              <Text style={styles.arrow}>›</Text>
+            </Pressable>
+          );
+        }}
         ListEmptyComponent={<Text style={styles.empty}>No hay depósitos disponibles.</Text>}
       />
     </Screen>

@@ -26,36 +26,55 @@ export interface EpcResult {
  * Se mantiene aquí, aislada de la UI, para poder cambiar la codificación si el
  * backend confirma que alguno de estos identificadores no es numérico.
  */
-function decimalConcatToHex(values: string[], width: number): string {
-  const raw = values.join('').trim();
-  if (!/^\d+$/.test(raw)) {
-    throw new Error(`El componente EPC "${raw}" debe ser numérico para la máscara actual.`);
+export function stringToHex(value: string, minWidth = 0): string {
+  const raw = value ? String(value).trim() : '';
+  if (!raw) return '';
+
+  // Si es puramente numérico (ej: "811031") convertimos como entero BigInt
+  if (/^\d+$/.test(raw)) {
+    const hex = BigInt(raw).toString(16).toUpperCase();
+    return minWidth > 0 ? hex.padStart(minWidth, '0') : hex;
   }
-  return BigInt(raw).toString(16).toUpperCase().padStart(width, '0');
+
+  // Si ya es un valor hexadecimal válido
+  if (/^[0-9a-fA-F]+$/.test(raw)) {
+    const hex = raw.toUpperCase();
+    return minWidth > 0 ? hex.padStart(minWidth, '0') : hex;
+  }
+
+  // Convertir caracteres ASCII a HEX (byte a byte)
+  let hex = '';
+  for (let i = 0; i < raw.length; i++) {
+    hex += raw.charCodeAt(i).toString(16).toUpperCase().padStart(2, '0');
+  }
+  return minWidth > 0 ? hex.padStart(minWidth, '0') : hex;
 }
 
-function decimalToHex(value: string, width: number): string {
-  const raw = value.trim();
-  if (!/^\d+$/.test(raw)) {
-    throw new Error(`El componente EPC "${raw}" debe ser numérico para la máscara actual.`);
+function decimalConcatToHex(values: string[], width: number): string {
+  const raw = values.map((v) => (v ? String(v).trim() : '')).join('');
+  if (!raw) return '';
+  if (/^\d+$/.test(raw)) {
+    return BigInt(raw).toString(16).toUpperCase().padStart(width, '0');
   }
-  return BigInt(raw).toString(16).toUpperCase().padStart(width, '0');
+  return stringToHex(raw, width);
 }
 
 export function buildEpc(parts: EpcParts, mode: EpcDetectionMode): EpcResult {
   const firstPart = decimalConcatToHex([parts.brandPrefix, parts.modelrfid], 6);
 
+  const colorPart = parts.modelcolrfid ? stringToHex(parts.modelcolrfid, 3) : '';
+  const sizePart = parts.modelsizfid ? stringToHex(parts.modelsizfid, 3) : '';
+
   if (mode === 'model') {
-    return { mode, epc: firstPart, firstPart };
+    const epc = `${firstPart}${colorPart}${sizePart}`;
+    return { mode, epc, firstPart, colorPart, sizePart };
   }
 
   if (mode === 'color') {
     if (!parts.modelcolrfid) throw new Error('El SKU no tiene modelcolrfid.');
-    const colorPart = decimalToHex(parts.modelcolrfid, 3);
     return { mode, epc: `${firstPart}${colorPart}`, firstPart, colorPart };
   }
 
   if (!parts.modelsizfid) throw new Error('El SKU no tiene modelsizfid.');
-  const sizePart = decimalToHex(parts.modelsizfid, 3);
   return { mode, epc: `${firstPart}${sizePart}`, firstPart, sizePart };
 }

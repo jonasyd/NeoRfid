@@ -289,7 +289,7 @@ export async function searchModels(params: { sku?: string; query?: string }): Pr
   return Array.isArray(response.data?.results) ? response.data.results : [];
 }
 
-export async function getStock(sku: string, constock = true): Promise<{ rows: StockRow[]; modelphoto?: string }> {
+export async function getStock(sku: string, constock = false): Promise<{ rows: StockRow[]; modelphoto?: string }> {
   const depositUuid = session?.depositoSeleccionado?.uuid;
   if (!depositUuid) throw new Error('Seleccioná un depósito antes de consultar stock.');
 
