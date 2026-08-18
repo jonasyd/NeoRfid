@@ -48,9 +48,14 @@ export default function StockScreen() {
     return () => sub.remove();
   }, []);
 
-  // Búsqueda incremental con Debounce (solo si el modo es 'text')
+  // Búsqueda incremental con Debounce (solo si el modo es 'text' y no coincide exactamente con selectedSku)
   useEffect(() => {
     if (searchMode !== 'text') return;
+
+    if (selectedSku && query.trim() === selectedSku.trim()) {
+      setSuggestions([]);
+      return;
+    }
 
     if (query.trim().length < MIN_SEARCH) {
       setTimeout(() => {
@@ -75,7 +80,7 @@ export default function StockScreen() {
     }, DEBOUNCE_MS);
 
     return () => clearTimeout(timer);
-  }, [query, searchMode]);
+  }, [query, searchMode, selectedSku]);
 
   async function loadStockForSku(sku: string, constockParam = conStockFilter) {
     setLoadingStock(true);
@@ -438,8 +443,8 @@ function GroupedStockCard({
   const rawImage = modelphoto || activeRow?.modelphoto || activeRow?.image;
   const imageUri = getImageUri(rawImage);
 
-  const sess = getSession();
-  const brandPrefix = sess?.brandPrefix || '';
+  const { session } = useSession();
+  const brandPrefix = session?.brandPrefix || getSession()?.brandPrefix || '';
 
   let modelEpcHex = '';
   let colorEpcHex = '';
@@ -448,16 +453,40 @@ function GroupedStockCard({
   if (activeRow) {
     try {
       if (activeRow.modelrfid) {
-        modelEpcHex = buildEpc({ brandPrefix, modelrfid: activeRow.modelrfid }, 'model').epc;
+        modelEpcHex = buildEpc({
+          brandPrefix,
+          modelrfid: activeRow.modelrfid,
+          modelcolrfid: activeRow.modelcolrfid,
+          modelsizfid: activeRow.modelsizfid,
+        }, 'model').epc;
       }
       if (activeRow.modelrfid && activeRow.modelcolrfid) {
-        colorEpcHex = buildEpc({ brandPrefix, modelrfid: activeRow.modelrfid, modelcolrfid: activeRow.modelcolrfid }, 'color').epc;
+        colorEpcHex = buildEpc({
+          brandPrefix,
+          modelrfid: activeRow.modelrfid,
+          modelcolrfid: activeRow.modelcolrfid,
+          modelsizfid: activeRow.modelsizfid,
+        }, 'color').epc;
       }
       if (activeRow.modelrfid && activeRow.modelsizfid) {
-        sizeEpcHex = buildEpc({ brandPrefix, modelrfid: activeRow.modelrfid, modelsizfid: activeRow.modelsizfid }, 'size').epc;
+        sizeEpcHex = buildEpc({
+          brandPrefix,
+          modelrfid: activeRow.modelrfid,
+          modelcolrfid: activeRow.modelcolrfid,
+          modelsizfid: activeRow.modelsizfid,
+        }, 'size').epc;
       }
     } catch {
-      // Ignore HEX computation errors for display
+      // Fallback formatting if buildEpc throws
+      if (activeRow.modelrfid) {
+        modelEpcHex = stringToHex(brandPrefix + activeRow.modelrfid, 6);
+      }
+      if (activeRow.modelcolrfid) {
+        colorEpcHex = stringToHex(activeRow.modelcolrfid, 3);
+      }
+      if (activeRow.modelsizfid) {
+        sizeEpcHex = stringToHex(activeRow.modelsizfid, 3);
+      }
     }
   }
 

@@ -5,6 +5,7 @@ import { Screen } from '@/components/Screen';
 import { useSession } from '@/context/SessionContext';
 import { getSavedApiBaseUrl, saveApiBaseUrl } from '@/services/api';
 import { useChafonH103 } from '../../../../../react_chafon_sdk/useChafonH103';
+import ChafonH103, { type ChafonDevice } from '@modules/chafon-h103';
 
 const DEFAULT_SERVICE_UUID = '0000fee7-0000-1000-8000-00805f9b34fb';
 const DEFAULT_NOTIFY_UUID = '000036f1-0000-1000-8000-00805f9b34fb';
@@ -18,7 +19,7 @@ export default function ConfiguracionScreen() {
   const [supported, setSupported] = useState<boolean | null>(null);
   const [devices, setDevices] = useState<ChafonDevice[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [connection, setConnection] = useState('disconnected');
+  const [connection, setConnection] = useState<'connected' | 'disconnected'>('disconnected');
 
   // URL Base dynamic config
   const [apiBaseUrl, setApiBaseUrl] = useState('');
@@ -41,6 +42,22 @@ export default function ConfiguracionScreen() {
 
   useEffect(() => {
     getSavedApiBaseUrl().then(setApiBaseUrl).catch(() => undefined);
+
+    const devSub = ChafonH103.addDeviceListener((dev) => {
+      setDevices((prev) => {
+        if (prev.some((d) => d.address === dev.address)) return prev;
+        return [...prev, dev];
+      });
+    });
+
+    const connSub = ChafonH103.addConnectionListener((st) => {
+      setConnection(st);
+    });
+
+    return () => {
+      devSub.remove();
+      connSub.remove();
+    };
   }, []);
 
   async function requestBluetoothPermissions() {
@@ -73,12 +90,13 @@ export default function ConfiguracionScreen() {
   async function handleStartScan() {
     try {
       await requestBluetoothPermissions();
-      if (isScanning) {
-        await stopScan();
-      } else {
-        await startScan();
-      }
+      setScanning(true);
+      setDevices([]);
+      ChafonH103.scan(8000);
+      await startScan();
+      setTimeout(() => setScanning(false), 8000);
     } catch (e: any) {
+      setScanning(false);
       Alert.alert('Chafon BLE', e?.message ?? 'No se pudo escanear.');
     }
   }
@@ -131,15 +149,47 @@ export default function ConfiguracionScreen() {
 
         <Text style={styles.section}>Conexión a Terminal RFID (BLE)</Text>
         <Text style={styles.status}>
-          Estado de Terminal: <Text style={{ fontWeight: '700', color: isConnected ? '#12b76a' : '#f04438' }}>{isConnected ? 'Conectado' : 'Desconectado'}</Text>
+          Estado de Terminal: <Text style={{ fontWeight: '700', color: (isConnected || connection === 'connected') ? '#12b76a' : '#f04438' }}>{(isConnected || connection === 'connected') ? 'Conectado' : 'Desconectado'}</Text>
         </Text>
         <Text style={styles.help}>Presione &quot;Buscar Terminales&quot; para detectar automáticamente el lector Chafon H103 vía BLE.</Text>
 
         <View style={styles.actions}>
-          <Pressable style={[styles.button, isScanning && styles.buttonScanning]} onPress={handleStartScan}>
-            <Text style={styles.buttonText}>{isScanning ? 'Buscando Terminales…' : 'Buscar Terminales BLE'}</Text>
+          <Pressable style={[styles.button, (isScanning || scanning) && styles.buttonScanning]} onPress={handleStartScan}>
+            <Text style={styles.buttonText}>{(isScanning || scanning) ? 'Buscando Terminales…' : 'Buscar Terminales BLE'}</Text>
           </Pressable>
         </View>
+
+        {devices.map((device) => (
+          <Pressable
+            key={device.address}
+            style={styles.deviceCard}
+            onPress={async () => {
+              try {
+                await prepareConnection();
+                const ok = await ChafonH103.connect(device.address);
+                if (ok) setConnection('connected');
+              } catch (e: any) {
+                Alert.alert('CHAFON', e?.message ?? 'No se pudo conectar.');
+              }
+            }}
+          >
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Text style={styles.deviceName}>{device.name || 'Terminal Chafon H103'}</Text>
+                {device.isBonded && (
+                  <View style={styles.bondedBadge}>
+                    <Text style={styles.bondedText}>Vinculado</Text>
+                  </View>
+                )}
+              </View>
+              <Text style={styles.deviceAddress}>{device.address} {device.rssi ? `· RSSI ${device.rssi}` : ''}</Text>
+            </View>
+            <View style={styles.connectBadge}>
+              <Text style={styles.connectBadgeText}>Conectar</Text>
+              <Ionicons name="chevron-forward" size={16} color="#0b63ce" />
+            </View>
+          </Pressable>
+        ))}
 
         {isConnected && (
           <View style={styles.connectedActions}>
