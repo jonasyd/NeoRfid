@@ -14,6 +14,7 @@ export interface AuthResponseBody {
 export interface Deposito {
   nombre: string;
   uuid: string;
+  Sucursal?: string;
 }
 
 export interface DepositosResponse {
@@ -30,13 +31,23 @@ export interface SearchResponse {
 
 export interface StockRow {
   sku: string;
+  skuDescription?: string;
   skucolor: string;
   skusize: string;
-  colordesc: string;
-  sizedesc: string;
+  colordesc?: string;
+  sizedesc?: string;
   modelrfid: string;
   modelcolrfid: string;
   modelsizfid: string;
   stock: number;
+  stockInTransit?: number;
+  precio?: string;
+  Oferta?: string;
   image?: string;
+  modelphoto?: string;
+}
+
+export interface StockResponse {
+  rows: StockRow[];
+  modelphoto?: string;
 }

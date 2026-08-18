@@ -38,10 +38,10 @@ export function SessionProvider({ children }: PropsWithChildren) {
   }, [session]);
 
   const signIn = useCallback(async (username: string, password: string) => {
-    const newSession = await login(username, password);
-    setSession(newSession);
-    const depositos = await loadDepositos();
-    setSession((current) => current ? { ...current, depositos } : current);
+    await login(username, password);
+    await loadDepositos();
+    const current = getSession();
+    if (current) setSession({ ...current });
   }, []);
 
   const signOut = useCallback(async () => {

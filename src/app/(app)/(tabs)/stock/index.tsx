@@ -1,9 +1,9 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { Screen } from '@/components/Screen';
 import { getStock, searchModels, getSession } from '@/services/api';
-import { buildEpc, type EpcDetectionMode } from '@/services/epc';
+import { buildEpc, stringToHex, type EpcDetectionMode } from '@/services/epc';
 import type { SearchResult, StockRow, Deposito } from '@/types/api';
 import ChafonH103, { type ChafonTag } from '@modules/chafon-h103';
 import { useSession } from '@/context/SessionContext';
@@ -22,6 +22,7 @@ export default function StockScreen() {
 
   const [suggestions, setSuggestions] = useState<SearchResult[]>([]);
   const [stock, setStock] = useState<StockRow[]>([]);
+  const [modelphoto, setModelphoto] = useState<string | undefined>(undefined);
   const [selectedSku, setSelectedSku] = useState('');
   const [loadingSearch, setLoadingSearch] = useState(false);
   const [loadingStock, setLoadingStock] = useState(false);
@@ -33,6 +34,9 @@ export default function StockScreen() {
 
   // Calibración de potencia (0 - 30 dBm)
   const [rfidPower, setRfidPower] = useState(20);
+
+  // Filtro de conStock (default: false)
+  const [conStockFilter, setConStockFilter] = useState(false);
 
   const requestId = useRef(0);
   const inputRef = useRef<any>(null);
@@ -73,30 +77,32 @@ export default function StockScreen() {
     return () => clearTimeout(timer);
   }, [query, searchMode]);
 
-  async function loadStockForSku(sku: string) {
+  async function loadStockForSku(sku: string, constockParam = conStockFilter) {
     setLoadingStock(true);
     setError('');
     try {
-      const data = await getStock(sku, true);
-      setStock(data);
+      const res = await getStock(sku, constockParam);
+      setStock(res.rows);
+      setModelphoto(res.modelphoto);
     } catch (e: any) {
       setStock([]);
+      setModelphoto(undefined);
       setError(e?.response?.data?.message ?? e?.message ?? 'No se pudo consultar stock.');
     } finally {
       setLoadingStock(false);
     }
   }
 
-  // Si cambia el depósito seleccionado o el SKU activo, volver a cargar el stock
+  // Si cambia el depósito seleccionado, el SKU activo o la opción conStock, volver a cargar el stock
   const activeDepositUuid = session?.depositoSeleccionado?.uuid;
   useEffect(() => {
     if (selectedSku) {
       const timer = setTimeout(() => {
-        loadStockForSku(selectedSku);
+        loadStockForSku(selectedSku, conStockFilter);
       }, 0);
       return () => clearTimeout(timer);
     }
-  }, [activeDepositUuid, selectedSku]);
+  }, [activeDepositUuid, selectedSku, conStockFilter]);
 
   async function loadSku(sku: string) {
     setSelectedSku(sku);
@@ -143,11 +149,13 @@ export default function StockScreen() {
   }
 
   async function handleSelect(result: SearchResult) {
-    const sku = extractSku(result.model);
+    const rawSku = (result as any).sku || (result as any).SKU;
+    const sku = rawSku?.trim() || extractSku(result.model) || result.model?.trim();
     if (!sku) {
       setError('La respuesta de search no contiene un SKU reconocible.');
       return;
     }
+    setSuggestions([]);
     await loadSku(sku);
   }
 
@@ -161,6 +169,8 @@ export default function StockScreen() {
         modelcolrfid: row.modelcolrfid,
         modelsizfid: row.modelsizfid,
       }, mode).epc;
+
+      await ChafonH103.setSoundEnabled(false);
       await ChafonH103.startDetection(epc, 0, 100);
       setDetection({ mode, epc, running: true });
       setError('');
@@ -173,6 +183,7 @@ export default function StockScreen() {
     try {
       await ChafonH103.stopInventory();
       await ChafonH103.clearDetectionMask();
+      await ChafonH103.setSoundEnabled(true);
     } finally {
       setDetection(null);
     }
@@ -191,13 +202,15 @@ export default function StockScreen() {
   // Calibración de potencia RFID Chafon (+/-)
   function adjustPower(amount: number) {
     setRfidPower((prev) => {
-      const next = prev + amount;
-      return Math.max(0, Math.min(30, next));
+      const next = Math.max(0, Math.min(30, prev + amount));
+      ChafonH103.setPower(next).catch(() => undefined);
+      return next;
     });
   }
 
   return (
     <Screen>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>BÚSQUEDA DE ITEMS</Text>
 
       {/* Selector de Depósitos (Combo Box Customizado) */}
@@ -208,7 +221,11 @@ export default function StockScreen() {
           onPress={() => setShowDepositDropdown(!showDepositDropdown)}
         >
           <Text style={styles.depositPickerText}>
-            {session?.depositoSeleccionado?.nombre ?? 'Seleccionar Depósito'}
+            {session?.depositoSeleccionado
+              ? session.depositoSeleccionado.Sucursal
+                ? `${session.depositoSeleccionado.Sucursal} - ${session.depositoSeleccionado.nombre}`
+                : session.depositoSeleccionado.nombre
+              : 'Seleccionar Depósito'}
           </Text>
           <Ionicons
             name={showDepositDropdown ? "chevron-up" : "chevron-down"}
@@ -219,46 +236,61 @@ export default function StockScreen() {
 
         {showDepositDropdown && (
           <View style={styles.dropdownList}>
-            {(session?.depositos ?? []).map((dep) => (
-              <Pressable
-                key={dep.uuid}
-                style={[
-                  styles.dropdownItem,
-                  session?.depositoSeleccionado?.uuid === dep.uuid && styles.dropdownItemActive
-                ]}
-                onPress={() => handleSelectDeposit(dep)}
-              >
-                <Text
+            {(session?.depositos ?? []).map((dep) => {
+              const label = dep.Sucursal ? `${dep.Sucursal} - ${dep.nombre}` : dep.nombre;
+              return (
+                <Pressable
+                  key={dep.uuid}
                   style={[
-                    styles.dropdownItemText,
-                    session?.depositoSeleccionado?.uuid === dep.uuid && styles.dropdownItemTextActive
+                    styles.dropdownItem,
+                    session?.depositoSeleccionado?.uuid === dep.uuid && styles.dropdownItemActive
                   ]}
+                  onPress={() => handleSelectDeposit(dep)}
                 >
-                  {dep.nombre}
-                </Text>
-                {session?.depositoSeleccionado?.uuid === dep.uuid && (
-                  <Ionicons name="checkmark" size={18} color="#0b63ce" />
-                )}
-              </Pressable>
-            ))}
+                  <Text
+                    style={[
+                      styles.dropdownItemText,
+                      session?.depositoSeleccionado?.uuid === dep.uuid && styles.dropdownItemTextActive
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                  {session?.depositoSeleccionado?.uuid === dep.uuid && (
+                    <Ionicons name="checkmark" size={18} color="#0b63ce" />
+                  )}
+                </Pressable>
+              );
+            })}
           </View>
         )}
       </View>
 
-      {/* Sección de Calibración de Potencia RFID */}
-      <View style={styles.calibrationCard}>
-        <View style={styles.calibrationHeader}>
-          <Ionicons name="flash-outline" size={18} color="#0b63ce" />
-          <Text style={styles.calibrationTitle}>Calibración de Potencia RFID</Text>
+      {/* Ajustar potencia RFID y opción Con Stock */}
+      <View style={styles.configRowContainer}>
+        <View style={[styles.calibrationCard, { flex: 1, marginBottom: 0 }]}>
+          <View style={styles.calibrationHeader}>
+            <Ionicons name="flash-outline" size={18} color="#0b63ce" />
+            <Text style={styles.calibrationTitle}>Ajustar potencia RFID</Text>
+          </View>
+          <View style={styles.calibrationControls}>
+            <Pressable style={styles.calibButton} onPress={() => adjustPower(-1)}>
+              <Text style={styles.calibButtonText}>-</Text>
+            </Pressable>
+            <Text style={styles.calibValue}>{rfidPower} dBm</Text>
+            <Pressable style={styles.calibButton} onPress={() => adjustPower(1)}>
+              <Text style={styles.calibButtonText}>+</Text>
+            </Pressable>
+          </View>
         </View>
-        <View style={styles.calibrationControls}>
-          <Pressable style={styles.calibButton} onPress={() => adjustPower(-1)}>
-            <Text style={styles.calibButtonText}>-</Text>
-          </Pressable>
-          <Text style={styles.calibValue}>{rfidPower} dBm</Text>
-          <Pressable style={styles.calibButton} onPress={() => adjustPower(1)}>
-            <Text style={styles.calibButtonText}>+</Text>
-          </Pressable>
+
+        <View style={[styles.conStockCard]}>
+          <Text style={styles.conStockTitle}>Sólo con stock</Text>
+          <Switch
+            value={conStockFilter}
+            onValueChange={setConStockFilter}
+            trackColor={{ false: '#d0d5dd', true: '#b2ddff' }}
+            thumbColor={conStockFilter ? '#0b63ce' : '#f2f4f7'}
+          />
         </View>
       </View>
 
@@ -267,12 +299,12 @@ export default function StockScreen() {
         <Text style={styles.modeText}>
           Modo actual:{' '}
           <Text style={styles.modeActive}>
-            {searchMode === 'barcode' ? 'Lectura Barcode/SKU' : 'Búsqueda Texto/Query'}
+            {searchMode === 'barcode' ? 'Búsqueda por SKU' : 'Búsqueda por descripción'}
           </Text>
         </Text>
         {searchMode === 'barcode' && (
           <Pressable style={styles.resetModeButton} onPress={() => { setSearchMode('text'); setQuery(''); }}>
-            <Text style={styles.resetModeButtonText}>Volver a Texto</Text>
+            <Text style={styles.resetModeButtonText}>Volver a Descripción</Text>
           </Pressable>
         )}
       </View>
@@ -296,8 +328,8 @@ export default function StockScreen() {
         </Pressable>
       </View>
 
-      {/* Simulador de Escaneo de Barcode para facilitar pruebas automatizadas */}
-      {searchMode === 'barcode' && (
+      {/* Simulador de Escaneo de Barcode solo visible para el usuario NEOADMIN */}
+      {searchMode === 'barcode' && session?.username?.toUpperCase() === 'NEOADMIN' && (
         <Pressable
           style={styles.simulateButton}
           onPress={() => {
@@ -348,90 +380,286 @@ export default function StockScreen() {
         </View>
       )}
 
-      <FlatList
-        data={stock}
-        keyExtractor={(item, index) => `${item.sku}-${item.skucolor}-${item.skusize}-${index}`}
-        contentContainerStyle={{ paddingTop: 12, paddingBottom: 20 }}
-        renderItem={({ item }) => (
-          <StockCard
-            item={item}
-            detecting={detection?.epc}
-            onDetect={(mode) => startDetection(item, mode)}
-          />
-        )}
-        ListEmptyComponent={
-          !loadingStock && selectedSku ? (
-            <Text style={styles.empty}>Sin stock para el SKU consultado en el depósito activo.</Text>
-          ) : undefined
-        }
-      />
+      {!loadingStock && stock.length > 0 ? (
+        <GroupedStockCard
+          stock={stock}
+          modelphoto={modelphoto}
+          detecting={detection?.epc}
+          onDetect={(item, mode) => startDetection(item, mode)}
+        />
+      ) : !loadingStock && selectedSku ? (
+        <Text style={styles.empty}>Sin stock para el SKU consultado en el depósito activo.</Text>
+      ) : null}
+      </ScrollView>
     </Screen>
   );
 }
 
-function extractSku(model: string): string | null {
+function extractSku(model?: string): string | null {
+  if (!model) return null;
   const match = model.match(/\(([^)]+)\)\s*$/);
-  return match?.[1]?.trim() || null;
+  if (match?.[1]?.trim()) {
+    return match[1].trim();
+  }
+  return model.trim() || null;
 }
 
-function StockCard({
-  item,
-  onDetect,
+function GroupedStockCard({
+  stock,
+  modelphoto,
   detecting,
+  onDetect,
 }: {
-  item: StockRow;
-  onDetect: (mode: EpcDetectionMode) => void;
+  stock: StockRow[];
+  modelphoto?: string;
   detecting?: string;
+  onDetect: (item: StockRow, mode: EpcDetectionMode) => void;
 }) {
-  const imageUri = getImageUri(item.image);
+  const colors = Array.from(new Set(stock.map((s) => s.colordesc || s.skucolor)));
+  const [userSelectedColor, setUserSelectedColor] = useState<string | null>(null);
+  const [showRfidDetails, setShowRfidDetails] = useState(false);
+
+  const activeColor = (userSelectedColor && colors.includes(userSelectedColor))
+    ? userSelectedColor
+    : (colors[0] || '');
+
+  const rowsForColor = stock.filter((s) => (s.colordesc || s.skucolor) === activeColor);
+
+  const sizes = Array.from(new Set(rowsForColor.map((s) => s.sizedesc || s.skusize)));
+  const [userSelectedSize, setUserSelectedSize] = useState<string | null>(null);
+
+  const activeSize = (userSelectedSize && sizes.includes(userSelectedSize))
+    ? userSelectedSize
+    : (sizes[0] || '');
+
+  const activeRow = rowsForColor.find((s) => (s.sizedesc || s.skusize) === activeSize) || rowsForColor[0] || stock[0];
+
+  const title = activeRow?.skuDescription || activeRow?.sku || 'Producto';
+  const rawImage = modelphoto || activeRow?.modelphoto || activeRow?.image;
+  const imageUri = getImageUri(rawImage);
+
+  const sess = getSession();
+  const brandPrefix = sess?.brandPrefix || '';
+
+  const modelHexField = activeRow?.modelrfid ? stringToHex(activeRow.modelrfid) : '';
+  const colorHexField = activeRow?.modelcolrfid ? stringToHex(activeRow.modelcolrfid) : '';
+  const sizeHexField = activeRow?.modelsizfid ? stringToHex(activeRow.modelsizfid) : '';
+
+  let modelEpcHex = '';
+  let colorEpcHex = '';
+  let sizeEpcHex = '';
+
+  if (activeRow) {
+    try {
+      if (activeRow.modelrfid) {
+        modelEpcHex = buildEpc({
+          brandPrefix,
+          modelrfid: activeRow.modelrfid,
+          modelcolrfid: activeRow.modelcolrfid,
+          modelsizfid: activeRow.modelsizfid,
+        }, 'model').epc;
+      }
+      if (activeRow.modelrfid && activeRow.modelcolrfid) {
+        colorEpcHex = buildEpc({ brandPrefix, modelrfid: activeRow.modelrfid, modelcolrfid: activeRow.modelcolrfid }, 'color').epc;
+      }
+      if (activeRow.modelrfid && activeRow.modelsizfid) {
+        sizeEpcHex = buildEpc({ brandPrefix, modelrfid: activeRow.modelrfid, modelsizfid: activeRow.modelsizfid }, 'size').epc;
+      }
+    } catch {
+      // Ignore HEX computation errors for display
+    }
+  }
 
   return (
-    <View style={styles.card}>
-      <View style={styles.imageWrap}>
-        {imageUri ? (
-          <Image
-            source={{ uri: imageUri }}
-            style={styles.productImage}
-            resizeMode="cover"
-            accessibilityLabel={`Imagen de ${item.sku}`}
-          />
-        ) : (
-          <View style={styles.imagePlaceholder}>
-            <Ionicons name="image-outline" size={30} color="#98a2b3" />
-          </View>
-        )}
-      </View>
+    <View style={styles.cardContainer}>
+      {/* Top Header Row with Photo & Details */}
+      <View style={styles.topRow}>
+        <View style={styles.imageWrapLarge}>
+          {imageUri ? (
+            <Image
+              source={{ uri: imageUri }}
+              style={styles.productImageLarge}
+              resizeMode="cover"
+              accessibilityLabel={`Imagen de ${title}`}
+            />
+          ) : (
+            <View style={styles.imagePlaceholderLarge}>
+              <Ionicons name="image-outline" size={40} color="#98a2b3" />
+            </View>
+          )}
+        </View>
 
-      <View style={styles.productInfo}>
-        <Text style={styles.sku} numberOfLines={1}>{item.sku}</Text>
-        <Text style={styles.model} numberOfLines={1}>
-          {item.colordesc || item.skucolor} · {item.sizedesc || item.skusize}
-        </Text>
-        <Text style={styles.rfid} numberOfLines={1}>
-          RFID: {item.modelrfid}
-        </Text>
+        <View style={styles.detailsCol}>
+          <Text style={styles.productTitle}>{title}</Text>
+          <Text style={styles.colorSubtitle}>
+            Color: <Text style={styles.colorValue}>{activeColor || activeRow?.skucolor}</Text>
+          </Text>
 
-        <View style={styles.detectActions}>
-          <DetectButton icon="radio-outline" label="Modelo" onPress={() => onDetect('model')} />
-          <DetectButton
-            icon="color-filter-outline"
-            label="Color"
-            disabled={!item.modelcolrfid}
-            onPress={() => onDetect('color')}
-          />
-          <DetectButton
-            icon="resize-outline"
-            label="Talle"
-            disabled={!item.modelsizfid}
-            onPress={() => onDetect('size')}
-          />
+          {colors.length > 1 && (
+            <View style={styles.colorPickerRow}>
+              {colors.map((c) => {
+                const colorStock = stock.filter((s) => (s.colordesc || s.skucolor) === c).reduce((acc, curr) => acc + curr.stock, 0);
+                const hasStock = colorStock > 0;
+                const isSelected = activeColor === c;
+
+                return (
+                  <Pressable
+                    key={c}
+                    style={[
+                      styles.colorChip,
+                      hasStock ? styles.colorChipSolid : styles.colorChipDashed,
+                      isSelected && (hasStock ? styles.colorChipActive : styles.colorChipDashedActive)
+                    ]}
+                    onPress={() => { setUserSelectedColor(c); setUserSelectedSize(null); }}
+                  >
+                    <Text
+                      style={[
+                        styles.colorChipText,
+                        hasStock ? styles.textGreen : styles.textRed,
+                        isSelected && styles.colorChipTextActive
+                      ]}
+                    >
+                      {c}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          )}
+
+          {activeRow?.Oferta ? (
+            <View style={styles.ofertaBadge}>
+              <Ionicons name="pricetag" size={14} color="#b58a00" />
+              <Text style={styles.ofertaText}>En oferta</Text>
+            </View>
+          ) : null}
         </View>
       </View>
 
-      <View style={[styles.stockBadge, item.stock === 0 && styles.stockBadgeZero]}>
-        <Text style={[styles.stock, item.stock === 0 && styles.stockZero]}>{item.stock}</Text>
-        <Text style={[styles.stockLabel, item.stock === 0 && styles.stockLabelZero]}>stock</Text>
+      <View style={styles.divider} />
+
+      {/* Talles disponibles */}
+      <Text style={styles.tallesTitle}>Talles disponibles:</Text>
+      <View style={styles.tallesRow}>
+        {sizes.map((sz) => {
+          const rowForSz = rowsForColor.find((s) => (s.sizedesc || s.skusize) === sz);
+          const szStock = rowForSz ? rowForSz.stock : 0;
+          const hasStock = szStock > 0;
+          const isSelected = activeSize === sz;
+
+          return (
+            <Pressable
+              key={sz}
+              style={[
+                styles.talleButton,
+                hasStock ? styles.talleSolid : styles.talleDashed,
+                isSelected && (hasStock ? styles.talleButtonActive : styles.talleDashedActive)
+              ]}
+              onPress={() => setUserSelectedSize(sz)}
+            >
+              <Text
+                style={[
+                  styles.talleText,
+                  hasStock ? styles.textGreen : styles.textRed,
+                  isSelected && styles.talleTextActive
+                ]}
+              >
+                {sz}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
+
+      {/* Detalle del talle seleccionado */}
+      {activeRow && (
+        <View style={styles.selectedSizeDetail}>
+          <Text style={styles.selectedTalleHeader}>Talle: {activeRow.sizedesc || activeRow.skusize}</Text>
+
+          <View style={styles.infoGrid}>
+            <View style={styles.infoCol}>
+              <View style={styles.iconValRow}>
+                <View style={[styles.dot, activeRow.stock > 0 ? styles.dotGreen : styles.dotRed]} />
+                <Text style={styles.infoLabel}>Stock: </Text>
+                <Text style={[styles.infoValueBold, activeRow.stock > 0 ? styles.textGreen : styles.textRed]}>
+                  {activeRow.stock}
+                </Text>
+              </View>
+              {activeRow.stockInTransit !== undefined && (
+                <Text style={styles.infoSubtext}>Tránsito: {activeRow.stockInTransit}</Text>
+              )}
+            </View>
+
+            <View style={[styles.infoCol, { alignItems: 'flex-end' }]}>
+              {activeRow.precio && (
+                <Text style={styles.infoPrice}>
+                  Precio: ${activeRow.precio}
+                </Text>
+              )}
+              {activeRow.Oferta && (
+                <Text style={styles.infoOfertaPrice}>
+                  Oferta: ${activeRow.Oferta}
+                </Text>
+              )}
+            </View>
+          </View>
+
+          {/* Detección RFID Icons (Remera, Paleta de Colores, Regla) */}
+          <View style={styles.detectActions}>
+            <DetectButton
+              icon="shirt-outline"
+              label="Modelo"
+              onPress={() => onDetect(activeRow, 'model')}
+            />
+            <DetectButton
+              icon="color-palette-outline"
+              label="Color"
+              disabled={!activeRow.modelcolrfid}
+              onPress={() => onDetect(activeRow, 'color')}
+            />
+            <DetectButton
+              icon="options-outline"
+              label="Talle"
+              disabled={!activeRow.modelsizfid}
+              onPress={() => onDetect(activeRow, 'size')}
+            />
+          </View>
+
+          {/* Acordeón para Códigos RFID e Identificadores HEX (Contraído por defecto) */}
+          <Pressable
+            style={styles.accordionHeader}
+            onPress={() => setShowRfidDetails(!showRfidDetails)}
+          >
+            <Ionicons name="hardware-chip-outline" size={16} color="#475467" />
+            <Text style={styles.accordionTitle}>Detalle Códigos e Identificadores EPC (HEX)</Text>
+            <Ionicons name={showRfidDetails ? "chevron-up" : "chevron-down"} size={16} color="#475467" />
+          </Pressable>
+
+          {showRfidDetails && (
+            <View style={styles.accordionBody}>
+              <Text style={styles.rfidCodeText}>
+                modelrfid: <Text style={styles.codeVal}>{activeRow.modelrfid || '-'}</Text> {modelHexField ? <Text style={styles.codeValHex}>({modelHexField})</Text> : null}
+              </Text>
+              <Text style={styles.rfidCodeText}>
+                modelcolrfid: <Text style={styles.codeVal}>{activeRow.modelcolrfid || '-'}</Text> {colorHexField ? <Text style={styles.codeValHex}>({colorHexField})</Text> : null}
+              </Text>
+              <Text style={styles.rfidCodeText}>
+                modelsizfid: <Text style={styles.codeVal}>{activeRow.modelsizfid || '-'}</Text> {sizeHexField ? <Text style={styles.codeValHex}>({sizeHexField})</Text> : null}
+              </Text>
+              <View style={{ height: 1, backgroundColor: '#eaecf0', marginVertical: 6 }} />
+              <Text style={styles.rfidCodeText}>
+                EPC Modelo (HEX): <Text style={styles.codeValHex}>{modelEpcHex || '-'}</Text>
+              </Text>
+              <Text style={styles.rfidCodeText}>
+                EPC Color (HEX): <Text style={styles.codeValHex}>{colorEpcHex || '-'}</Text>
+              </Text>
+              <Text style={styles.rfidCodeText}>
+                EPC Talle (HEX): <Text style={styles.codeValHex}>{sizeEpcHex || '-'}</Text>
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
     </View>
   );
 }
@@ -469,6 +697,7 @@ function DetectButton({
 }
 
 const styles = StyleSheet.create({
+  scrollContent: { paddingBottom: 32 },
   title: { fontSize: 24, fontWeight: '700', color: '#101828', marginTop: 8, marginBottom: 12 },
   searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#d0d5dd', paddingLeft: 12, minHeight: 50 },
   input: { flex: 1, paddingHorizontal: 10, color: '#101828', fontSize: 15 },
@@ -515,14 +744,35 @@ const styles = StyleSheet.create({
   dropdownItemText: { fontSize: 13, color: '#344054' },
   dropdownItemTextActive: { fontWeight: '700', color: '#0b63ce' },
 
-  // Power calibration styles
-  calibrationCard: { backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#eaecf0', marginBottom: 12 },
-  calibrationHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
-  calibrationTitle: { fontSize: 13, fontWeight: '700', color: '#344054' },
-  calibrationControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 20, paddingVertical: 4 },
-  calibButton: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: '#d0d5dd', backgroundColor: '#f9fafb', justifyContent: 'center', alignItems: 'center' },
-  calibButtonText: { fontSize: 18, fontWeight: '600', color: '#101828' },
-  calibValue: { fontSize: 15, fontWeight: '700', color: '#0b63ce', minWidth: 60, textAlign: 'center' },
+  // Config Row styles (Power calibration & Con Stock filter)
+  configRowContainer: { flexDirection: 'row', gap: 10, marginBottom: 12 },
+  calibrationCard: { backgroundColor: '#fff', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: '#eaecf0' },
+  calibrationHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
+  calibrationTitle: { fontSize: 12, fontWeight: '700', color: '#344054' },
+  calibrationControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, paddingVertical: 2 },
+  calibButton: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, borderColor: '#d0d5dd', backgroundColor: '#f9fafb', justifyContent: 'center', alignItems: 'center' },
+  calibButtonText: { fontSize: 16, fontWeight: '600', color: '#101828' },
+  calibValue: { fontSize: 13, fontWeight: '700', color: '#0b63ce', minWidth: 50, textAlign: 'center' },
+  conStockCard: { width: 110, backgroundColor: '#fff', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: '#eaecf0', alignItems: 'center', justifyContent: 'center', gap: 4 },
+  conStockTitle: { fontSize: 11, fontWeight: '700', color: '#344054', textAlign: 'center' },
+
+  // Solid & Dashed stock styles
+  colorChipSolid: { borderWidth: 1, borderColor: '#12b76a' },
+  colorChipDashed: { borderWidth: 1, borderColor: '#f04438', borderStyle: 'dashed' },
+  colorChipDashedActive: { backgroundColor: '#f04438', borderColor: '#f04438' },
+  talleSolid: { borderWidth: 1, borderColor: '#12b76a' },
+  talleDashed: { borderWidth: 1, borderColor: '#f04438', borderStyle: 'dashed' },
+  talleDashedActive: { backgroundColor: '#f04438', borderColor: '#f04438' },
+  textGreen: { color: '#027a48', fontWeight: '700' },
+  textRed: { color: '#b42318', fontWeight: '700' },
+
+  // Accordion details styles
+  accordionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12, paddingTop: 10, borderTopWidth: 1, borderTopColor: '#eaecf0' },
+  accordionTitle: { flex: 1, fontSize: 12, fontWeight: '700', color: '#344054' },
+  accordionBody: { marginTop: 8, backgroundColor: '#f8fafc', padding: 10, borderRadius: 8, borderWidth: 1, borderColor: '#e2e8f0' },
+  rfidCodeText: { fontSize: 11, color: '#475467', marginVertical: 1 },
+  codeVal: { fontWeight: '700', color: '#0f172a' },
+  codeValHex: { fontWeight: '700', color: '#0284c7', fontFamily: 'monospace' },
 
   // Mode select styles
   modeContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, marginTop: 4 },
@@ -533,5 +783,43 @@ const styles = StyleSheet.create({
 
   // Simulate button styles
   simulateButton: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8, padding: 10, borderRadius: 8, backgroundColor: '#eff8ff', borderWidth: 1, borderColor: '#b2ddff', alignSelf: 'flex-start' },
-  simulateButtonText: { fontSize: 11, fontWeight: '600', color: '#0b63ce' }
+  simulateButtonText: { fontSize: 11, fontWeight: '600', color: '#0b63ce' },
+
+  // Grouped Stock Card styles
+  cardContainer: { backgroundColor: '#fff', borderRadius: 16, padding: 16, marginTop: 12, marginBottom: 16, borderWidth: 1, borderColor: '#eaecf0', elevation: 2 },
+  topRow: { flexDirection: 'row', gap: 14 },
+  imageWrapLarge: { width: 110, height: 130, borderRadius: 12, overflow: 'hidden', backgroundColor: '#f2f4f7' },
+  productImageLarge: { width: '100%', height: '100%' },
+  imagePlaceholderLarge: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  detailsCol: { flex: 1, justifyContent: 'flex-start' },
+  productTitle: { fontSize: 20, fontWeight: '800', color: '#022449', letterSpacing: 0.5 },
+  colorSubtitle: { fontSize: 14, color: '#475467', marginTop: 4 },
+  colorValue: { fontWeight: '700', color: '#101828' },
+  colorPickerRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  colorChip: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: '#f2f4f7', borderWidth: 1, borderColor: '#d0d5dd' },
+  colorChipActive: { backgroundColor: '#022449', borderColor: '#022449' },
+  colorChipText: { fontSize: 11, color: '#344054' },
+  colorChipTextActive: { color: '#fff', fontWeight: '700' },
+  ofertaBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#fffbeb', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, borderWidth: 1, borderColor: '#fef08a', alignSelf: 'flex-start', marginTop: 10 },
+  ofertaText: { fontSize: 12, fontWeight: '700', color: '#b58a00' },
+  divider: { height: 1, backgroundColor: '#eaecf0', marginVertical: 14 },
+  tallesTitle: { fontSize: 14, fontWeight: '700', color: '#101828', marginBottom: 10 },
+  tallesRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  talleButton: { width: 48, height: 40, borderRadius: 10, backgroundColor: '#f2f4f7', borderWidth: 1, borderColor: '#d0d5dd', justifyContent: 'center', alignItems: 'center' },
+  talleButtonActive: { backgroundColor: '#2080d0', borderColor: '#2080d0' },
+  talleText: { fontSize: 14, fontWeight: '600', color: '#344054' },
+  talleTextActive: { color: '#fff', fontWeight: '800' },
+  selectedSizeDetail: { backgroundColor: '#f9fafb', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#f2f4f7', marginTop: 4 },
+  selectedTalleHeader: { fontSize: 15, fontWeight: '700', color: '#101828', marginBottom: 8 },
+  infoGrid: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  infoCol: { gap: 2 },
+  iconValRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  dot: { width: 10, height: 10, borderRadius: 5 },
+  dotGreen: { backgroundColor: '#12b76a' },
+  dotRed: { backgroundColor: '#f04438' },
+  infoLabel: { fontSize: 14, color: '#475467' },
+  infoValueBold: { fontSize: 16, fontWeight: '800', color: '#101828' },
+  infoSubtext: { fontSize: 12, color: '#667085' },
+  infoPrice: { fontSize: 14, color: '#475467', fontWeight: '600' },
+  infoOfertaPrice: { fontSize: 15, color: '#b58a00', fontWeight: '800' }
 });

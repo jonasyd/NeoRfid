@@ -10,7 +10,7 @@ import type {
   StockRow,
 } from '@/types/api';
 
-const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'http://192.168.68.69:8000/';
+const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'http://192.168.68.68:8000/';
 const AUTH_PATH = process.env.EXPO_PUBLIC_AUTH_PATH ?? '/v1/mobile/auth';
 const DEPOSITS_PATH = process.env.EXPO_PUBLIC_DEPOSITS_PATH ?? '/v1/mobile/deposites';
 const SEARCH_PATH = process.env.EXPO_PUBLIC_SEARCH_PATH ?? '/v1/mobile/search';
@@ -265,6 +265,9 @@ export async function loadDepositos(): Promise<Deposito[]> {
   const data = Array.isArray(response.data?.deposites) ? response.data.deposites : [];
   if (session) {
     session.depositos = data;
+    if (!session.depositoSeleccionado && data.length > 0) {
+      session.depositoSeleccionado = data[0];
+    }
     await persistSession();
   }
   return data;
@@ -286,17 +289,32 @@ export async function searchModels(params: { sku?: string; query?: string }): Pr
   return Array.isArray(response.data?.results) ? response.data.results : [];
 }
 
-export async function getStock(sku: string, constock = true): Promise<StockRow[]> {
+export async function getStock(sku: string, constock = false): Promise<{ rows: StockRow[]; modelphoto?: string }> {
   const depositUuid = session?.depositoSeleccionado?.uuid;
   if (!depositUuid) throw new Error('Seleccioná un depósito antes de consultar stock.');
 
-  const response = await api.post<StockRow[]>(STOCK_PATH, {
+  const response = await api.post<any[]>(STOCK_PATH, {
     depositUuid,
     sku: sku.trim(),
     constock,
   });
 
-  return Array.isArray(response.data) ? response.data : [];
+  const rawData = Array.isArray(response.data) ? response.data : [];
+  let modelphoto: string | undefined = undefined;
+  const rows: StockRow[] = [];
+
+  for (const item of rawData) {
+    if (item.modelphoto && !item.sku) {
+      modelphoto = item.modelphoto;
+    } else if (item.sku) {
+      if (item.modelphoto && !modelphoto) {
+        modelphoto = item.modelphoto;
+      }
+      rows.push(item);
+    }
+  }
+
+  return { rows, modelphoto };
 }
 
 export async function refreshAccessToken(): Promise<string> {
