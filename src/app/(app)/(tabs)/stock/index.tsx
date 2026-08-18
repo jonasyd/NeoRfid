@@ -1,9 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { ActivityIndicator, Image, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { Screen } from '@/components/Screen';
 import { getStock, searchModels, getSession } from '@/services/api';
-import { buildEpc, type EpcDetectionMode } from '@/services/epc';
+import { buildEpc, stringToHex, type EpcDetectionMode } from '@/services/epc';
 import type { SearchResult, StockRow, Deposito } from '@/types/api';
 import ChafonH103, { type ChafonTag } from '@modules/chafon-h103';
 import { useSession } from '@/context/SessionContext';
@@ -149,11 +150,13 @@ export default function StockScreen() {
   }
 
   async function handleSelect(result: SearchResult) {
-    const sku = extractSku(result.model);
+    const rawSku = (result as any).sku || (result as any).SKU;
+    const sku = rawSku?.trim() || extractSku(result.model) || result.model?.trim();
     if (!sku) {
       setError('La respuesta de search no contiene un SKU reconocible.');
       return;
     }
+    setSuggestions([]);
     await loadSku(sku);
   }
 
@@ -167,6 +170,8 @@ export default function StockScreen() {
         modelcolrfid: row.modelcolrfid,
         modelsizfid: row.modelsizfid,
       }, mode).epc;
+
+      await ChafonH103.setSoundEnabled(false);
       await ChafonH103.startDetection(epc, 0, 100);
       setDetection({ mode, epc, running: true });
       setError('');
@@ -179,6 +184,7 @@ export default function StockScreen() {
     try {
       await ChafonH103.stopInventory();
       await ChafonH103.clearDetectionMask();
+      await ChafonH103.setSoundEnabled(true);
     } finally {
       setDetection(null);
     }
@@ -197,13 +203,15 @@ export default function StockScreen() {
   // Calibración de potencia RFID Chafon (+/-)
   function adjustPower(amount: number) {
     setRfidPower((prev) => {
-      const next = prev + amount;
-      return Math.max(0, Math.min(30, next));
+      const next = Math.max(0, Math.min(30, prev + amount));
+      ChafonH103.setPower(next).catch(() => undefined);
+      return next;
     });
   }
 
   return (
     <Screen>
+      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>BÚSQUEDA DE ITEMS</Text>
 
       {/* Selector de Depósitos (Combo Box Customizado) */}
@@ -321,8 +329,8 @@ export default function StockScreen() {
         </Pressable>
       </View>
 
-      {/* Simulador de Escaneo de Barcode para facilitar pruebas automatizadas */}
-      {searchMode === 'barcode' && (
+      {/* Simulador de Escaneo de Barcode solo visible para el usuario NEOADMIN */}
+      {searchMode === 'barcode' && session?.username?.toUpperCase() === 'NEOADMIN' && (
         <Pressable
           style={styles.simulateButton}
           onPress={() => {
@@ -383,13 +391,18 @@ export default function StockScreen() {
       ) : !loadingStock && selectedSku ? (
         <Text style={styles.empty}>Sin stock para el SKU consultado en el depósito activo.</Text>
       ) : null}
+      </ScrollView>
     </Screen>
   );
 }
 
-function extractSku(model: string): string | null {
+function extractSku(model?: string): string | null {
+  if (!model) return null;
   const match = model.match(/\(([^)]+)\)\s*$/);
-  return match?.[1]?.trim() || null;
+  if (match?.[1]?.trim()) {
+    return match[1].trim();
+  }
+  return model.trim() || null;
 }
 
 function GroupedStockCard({
@@ -676,6 +689,7 @@ function DetectButton({
 }
 
 const styles = StyleSheet.create({
+  scrollContent: { paddingBottom: 32 },
   title: { fontSize: 24, fontWeight: '700', color: '#101828', marginTop: 8, marginBottom: 12 },
   searchBox: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 12, borderWidth: 1, borderColor: '#d0d5dd', paddingLeft: 12, minHeight: 50 },
   input: { flex: 1, paddingHorizontal: 10, color: '#101828', fontSize: 15 },
