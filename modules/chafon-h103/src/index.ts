@@ -200,6 +200,13 @@ const ChafonH103 = {
       return { remove: () => {} };
     }
   },
+  addScanErrorListener(listener: (error: { errorCode?: number; message: string }) => void) {
+    try {
+      return (emitter as any).addListener('onScanError', listener);
+    } catch {
+      return { remove: () => {} };
+    }
+  },
   addTagListener(listener: (tag: ChafonTag) => void) {
     try {
       return (emitter as any).addListener('onTagRead', listener);

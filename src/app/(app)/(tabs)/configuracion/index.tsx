@@ -54,29 +54,33 @@ export default function ConfiguracionScreen() {
       setConnection(st);
     });
 
+    const errSub = ChafonH103.addScanErrorListener((err) => {
+      Alert.alert('Escaneo BLE', err.message || 'Error durante el escaneo BLE.');
+    });
+
     return () => {
       devSub.remove();
       connSub.remove();
+      errSub.remove();
     };
   }, []);
 
   async function requestBluetoothPermissions() {
     if (PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN && PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT) {
-      try {
-        await PermissionsAndroid.requestMultiple([
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        ]);
-      } catch {
-        // Ignore permission request errors if already granted at OS level
+      const res = await PermissionsAndroid.requestMultiple([
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+      ]);
+
+      const scanGranted = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.GRANTED;
+      const connectGranted = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.GRANTED;
+
+      if (!scanGranted || !connectGranted) {
+        throw new Error('Concedé los permisos Bluetooth y Ubicación para continuar.');
       }
     }
-    try {
-      await ChafonH103.initialize();
-    } catch {
-      // Ignore native module re-initialization errors
-    }
+    await ChafonH103.initialize();
   }
 
   async function prepareConnection(s = serviceUuid, n = notifyUuid, w = writeUuid) {
@@ -93,7 +97,6 @@ export default function ConfiguracionScreen() {
       setScanning(true);
       setDevices([]);
       ChafonH103.scan(8000);
-      await startScan();
       setTimeout(() => setScanning(false), 8000);
     } catch (e: any) {
       setScanning(false);

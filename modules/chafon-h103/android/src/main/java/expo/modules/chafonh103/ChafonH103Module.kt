@@ -100,17 +100,27 @@ class ChafonH103Module : Module() {
           }
 
           override fun onBtScanFail(errorCode: Int) {
-            sendEvent("onDeviceFound", mapOf("error" to errorCode))
+            sendEvent("onScanError", mapOf("errorCode" to errorCode, "message" to "Chafon SDK scan failed: $errorCode"))
           }
         })
-      } catch (_: Exception) {}
+      } catch (e: Exception) {
+        sendEvent("onScanError", mapOf("message" to (e.message ?: "Error al iniciar escaneo Chafon SDK")))
+      }
 
       // 3. Escaneo estándar Android LE como fallback para capturar la terminal H103 visible en Bluetooth
       try {
         val manager = appContext.reactContext?.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
         val scanner = manager?.adapter?.bluetoothLeScanner
-        scanner?.startScan(leScanCallback)
-      } catch (_: SecurityException) {} catch (_: Exception) {}
+        if (scanner != null) {
+          scanner.startScan(leScanCallback)
+        } else {
+          sendEvent("onScanError", mapOf("message" to "BluetoothLeScanner no disponible o Bluetooth apagado"))
+        }
+      } catch (e: SecurityException) {
+        sendEvent("onScanError", mapOf("message" to (e.message ?: "Permiso de Bluetooth denegado al escanear")))
+      } catch (e: Exception) {
+        sendEvent("onScanError", mapOf("message" to (e.message ?: "Error en escaneo BLE de Android")))
+      }
 
       if (timeoutMs > 0) {
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -306,6 +316,14 @@ class ChafonH103Module : Module() {
   private val leScanCallback = object : ScanCallback() {
     override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
       handleScanResult(result)
+    }
+
+    override fun onBatchScanResults(results: MutableList<android.bluetooth.le.ScanResult>) {
+      results.forEach { handleScanResult(it) }
+    }
+
+    override fun onScanFailed(errorCode: Int) {
+      sendEvent("onScanError", mapOf("errorCode" to errorCode, "message" to "Android BLE scan failed (code $errorCode)"))
     }
   }
 
