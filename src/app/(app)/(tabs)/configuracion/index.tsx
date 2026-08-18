@@ -108,15 +108,6 @@ export default function ConfiguracionScreen() {
     }
   }
 
-  async function handleConnect(device: any) {
-    try {
-      await prepareConnection();
-      Alert.alert('CHAFON', 'SDK inicializado.');
-    } catch (e: any) {
-      Alert.alert('Chafon Terminal', e?.message ?? 'Error de conexión.');
-    }
-  }
-
   async function handleSaveApiUrl() {
     try {
       await saveApiBaseUrl(apiBaseUrl.trim());
@@ -228,30 +219,6 @@ export default function ConfiguracionScreen() {
           </View>
         )}
 
-        {/* Dispositivos Escaneados */}
-        {!isConnected && scannedDevices.length > 0 && (
-          <View style={styles.devicesContainer}>
-            <Text style={styles.subSectionTitle}>Dispositivos detectados:</Text>
-            {scannedDevices.map((dev) => (
-              <Pressable
-                key={dev.address}
-                style={styles.deviceCard}
-                onPress={() => handleConnect(dev)}
-              >
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={styles.deviceName}>{dev.name || 'Terminal Chafon H103'}</Text>
-                  </View>
-                  <Text style={styles.deviceAddress}>{dev.address}</Text>
-                </View>
-                <View style={styles.connectBadge}>
-                  <Text style={styles.connectBadgeText}>Emparejar</Text>
-                  <Ionicons name="chevron-forward" size={16} color="#0b63ce" />
-                </View>
-              </Pressable>
-            ))}
-          </View>
-        )}
       </ScrollView>
     </Screen>
   );
