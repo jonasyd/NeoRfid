@@ -92,39 +92,16 @@ const ChafonH103 = {
       return Promise.resolve(false);
     }
   },
-  initialize: () => {
-    try {
-      return Native.initialize();
-    } catch {
-      return Promise.resolve();
-    }
-  },
-  configureCharacteristics: (serviceUuid: string, notifyUuid: string, writeUuid: string) => {
-    try {
-      return Native.configureCharacteristics(serviceUuid, notifyUuid, writeUuid);
-    } catch {
-      return Promise.resolve();
-    }
-  },
-  scan: (timeoutMs = 5000) => {
-    try {
-      return Native.scan(timeoutMs);
-    } catch {
-      return Promise.resolve();
-    }
-  },
+  initialize: () => Native.initialize(),
+  configureCharacteristics: (serviceUuid: string, notifyUuid: string, writeUuid: string) =>
+    Native.configureCharacteristics(serviceUuid, notifyUuid, writeUuid),
+  scan: (timeoutMs = 5000) => Native.scan(timeoutMs),
   stopScan: () => {
     try {
       Native.stopScan();
     } catch {}
   },
-  connect: (address: string) => {
-    try {
-      return Native.connect(address);
-    } catch {
-      return Promise.resolve(false);
-    }
-  },
+  connect: (address: string) => Native.connect(address),
   disconnect: () => {
     try {
       Native.disconnect();
@@ -137,62 +114,14 @@ const ChafonH103 = {
       return false;
     }
   },
-  startInventory: (mode = 0, intervalMs = 100) => {
-    try {
-      return Native.startInventory(mode, intervalMs);
-    } catch {
-      return Promise.resolve();
-    }
-  },
-  stopInventory: () => {
-    try {
-      return Native.stopInventory();
-    } catch {
-      return Promise.resolve();
-    }
-  },
-  setPower: (powerDbm: number) => {
-    try {
-      return Native.setPower(powerDbm);
-    } catch {
-      return Promise.resolve();
-    }
-  },
-  setSoundEnabled: (enabled: boolean) => {
-    try {
-      return Native.setSoundEnabled(enabled);
-    } catch {
-      return Promise.resolve();
-    }
-  },
-  startDetection: (epc: string, mode = 0, intervalMs = 100) => {
-    try {
-      return Native.startDetection(epc, mode, intervalMs);
-    } catch {
-      return Promise.resolve();
-    }
-  },
-  clearDetectionMask: () => {
-    try {
-      return Native.clearDetectionMask();
-    } catch {
-      return Promise.resolve();
-    }
-  },
-  getBattery: () => {
-    try {
-      return Native.getBattery();
-    } catch {
-      return Promise.resolve(85);
-    }
-  },
-  getDeviceInfo: () => {
-    try {
-      return Native.getDeviceInfo();
-    } catch {
-      return Promise.resolve({ model: "CHAFON H103 MOCK", firmware: "v1.0.0" });
-    }
-  },
+  startInventory: (mode = 0, intervalMs = 100) => Native.startInventory(mode, intervalMs),
+  stopInventory: () => Native.stopInventory(),
+  setPower: (powerDbm: number) => Native.setPower(powerDbm),
+  setSoundEnabled: (enabled: boolean) => Native.setSoundEnabled(enabled),
+  startDetection: (epc: string, mode = 0, intervalMs = 100) => Native.startDetection(epc, mode, intervalMs),
+  clearDetectionMask: () => Native.clearDetectionMask(),
+  getBattery: () => Native.getBattery(),
+  getDeviceInfo: () => Native.getDeviceInfo(),
   addDeviceListener(listener: (device: ChafonDevice) => void) {
     try {
       return (emitter as any).addListener('onDeviceFound', listener);

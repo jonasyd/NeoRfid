@@ -65,7 +65,7 @@ export default function ConfiguracionScreen() {
     };
   }, []);
 
-  async function requestBluetoothPermissions() {
+  async function requestBluetoothPermissions(): Promise<boolean> {
     if (PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN && PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT) {
       const res = await PermissionsAndroid.requestMultiple([
         PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
@@ -77,26 +77,30 @@ export default function ConfiguracionScreen() {
       const connectGranted = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.GRANTED;
 
       if (!scanGranted || !connectGranted) {
-        throw new Error('Concedé los permisos Bluetooth y Ubicación para continuar.');
+        return false;
       }
     }
     await ChafonH103.initialize();
+    return true;
   }
 
   async function prepareConnection(s = serviceUuid, n = notifyUuid, w = writeUuid) {
     const finalS = s || DEFAULT_SERVICE_UUID;
     const finalN = n || DEFAULT_NOTIFY_UUID;
     const finalW = w || DEFAULT_WRITE_UUID;
-    await initialize();
+    await ChafonH103.initialize();
     await ChafonH103.configureCharacteristics(finalS, finalN, finalW);
   }
 
   async function handleStartScan() {
     try {
-      await requestBluetoothPermissions();
+      const granted = await requestBluetoothPermissions();
+      if (!granted) {
+        throw new Error('Concedé los permisos Bluetooth y Ubicación para continuar.');
+      }
       setScanning(true);
       setDevices([]);
-      ChafonH103.scan(8000);
+      await ChafonH103.scan(8000);
       setTimeout(() => setScanning(false), 8000);
     } catch (e: any) {
       setScanning(false);

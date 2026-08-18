@@ -34,7 +34,7 @@ class ChafonH103Module : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("ChafonH103")
-    Events("onDeviceFound", "onTagRead", "onConnectionState")
+    Events("onDeviceFound", "onTagRead", "onConnectionState", "onScanError")
 
     Function("isSupported") {
       val manager = appContext.reactContext?.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
