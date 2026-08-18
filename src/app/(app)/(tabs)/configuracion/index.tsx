@@ -1,10 +1,10 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useState } from 'react';
-import { Alert, PermissionsAndroid, Pressable, StyleSheet, Text, TextInput, View, ScrollView } from 'react-native';
+import { Alert, PermissionsAndroid, Pressable, StyleSheet, Text, TextInput, View, ScrollView, ActivityIndicator } from 'react-native';
 import { Screen } from '@/components/Screen';
-import ChafonH103, { type ChafonDevice } from '@modules/chafon-h103';
 import { useSession } from '@/context/SessionContext';
 import { getSavedApiBaseUrl, saveApiBaseUrl } from '@/services/api';
+import { useChafonH103 } from '../../../../../react_chafon_sdk/useChafonH103';
 
 const DEFAULT_SERVICE_UUID = '0000fee7-0000-1000-8000-00805f9b34fb';
 const DEFAULT_NOTIFY_UUID = '000036f1-0000-1000-8000-00805f9b34fb';
@@ -23,52 +23,35 @@ export default function ConfiguracionScreen() {
   // URL Base dynamic config
   const [apiBaseUrl, setApiBaseUrl] = useState('');
 
-  // SDK Tools state
-  const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
-  const [deviceInfo, setDeviceInfo] = useState<string | null>(null);
+  const {
+    isConnected,
+    isScanning,
+    batteryLevel,
+    scannedDevices,
+    keyState,
+    readMode,
+    error,
+    startScan,
+    stopScan,
+    connect,
+    disconnect,
+    getBatteryLevel,
+    setReadMode,
+  } = useChafonH103();
 
   useEffect(() => {
-    // Cargar la URL Base guardada
     getSavedApiBaseUrl().then(setApiBaseUrl).catch(() => undefined);
-
-    // Cargar soporte de Chafon de forma segura
-    try {
-      const isSup = ChafonH103.isSupported();
-      if (isSup && typeof (isSup as any).then === 'function') {
-        (isSup as any).then((res: any) => setSupported(!!res)).catch(() => setSupported(false));
-      } else {
-        setTimeout(() => setSupported(!!isSup), 0);
-      }
-    } catch {
-      setTimeout(() => setSupported(false), 0);
-    }
-
-    const deviceSub = ChafonH103.addDeviceListener((device) => {
-      if (!device.address) return;
-      setDevices((current) =>
-        current.some((d) => d.address === device.address)
-          ? current.map((d) => d.address === device.address ? device : d)
-          : [...current, device]
-      );
-    });
-
-    const connectionSub = ChafonH103.addConnectionListener((state) => setConnection(state));
-
-    return () => {
-      deviceSub.remove();
-      connectionSub.remove();
-      ChafonH103.stopScan();
-    };
   }, []);
 
-  async function initialize() {
+  async function requestBluetoothPermissions() {
     if (PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN && PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT) {
       const result = await PermissionsAndroid.requestMultiple([
         PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
       ]);
       const granted = Object.values(result).every((value) => value === PermissionsAndroid.RESULTS.GRANTED);
-      if (!granted) throw new Error('Concedé los permisos Bluetooth y volvé a intentar.');
+      if (!granted) throw new Error('Concedé los permisos Bluetooth y Ubicación para continuar.');
     }
     await ChafonH103.initialize();
   }
@@ -81,56 +64,34 @@ export default function ConfiguracionScreen() {
     await ChafonH103.configureCharacteristics(finalS, finalN, finalW);
   }
 
-  async function scan() {
+  async function handleStartScan() {
     try {
-      await initialize();
-      setDevices([]);
-      setScanning(true);
-      await ChafonH103.scan(7000);
-      setTimeout(() => setScanning(false), 7200);
+      await requestBluetoothPermissions();
+      if (isScanning) {
+        await stopScan();
+      } else {
+        await startScan();
+      }
     } catch (e: any) {
-      setScanning(false);
-      Alert.alert('CHAFON', e?.message ?? 'No se pudo iniciar el escaneo.');
+      Alert.alert('Chafon BLE', e?.message ?? 'No se pudo escanear.');
     }
   }
 
-  async function connect() {
+  async function handleConnect(device: any) {
     try {
       await prepareConnection();
       Alert.alert('CHAFON', 'SDK inicializado.');
     } catch (e: any) {
-      Alert.alert('CHAFON', e?.message ?? 'No se pudo inicializar.');
+      Alert.alert('Chafon Terminal', e?.message ?? 'Error de conexión.');
     }
   }
 
   async function handleSaveApiUrl() {
     try {
       await saveApiBaseUrl(apiBaseUrl.trim());
-      Alert.alert('Configuración', 'Debe reiniciar la app');
+      Alert.alert('Configuración', 'URL Base guardada. Se recomienda reiniciar la aplicación.');
     } catch (e: any) {
       Alert.alert('Error', e?.message ?? 'No se pudo guardar la URL Base.');
-    }
-  }
-
-  // SDK Tools functions
-  async function fetchBattery() {
-    try {
-      const level = await ChafonH103.getBattery();
-      setBatteryLevel(level);
-      Alert.alert('Herramientas Chafon', `Nivel de Batería: ${level}%`);
-    } catch (e: any) {
-      Alert.alert('Herramientas Chafon', e?.message ?? 'No se pudo leer la batería.');
-    }
-  }
-
-  async function fetchDeviceInfo() {
-    try {
-      const info = await ChafonH103.getDeviceInfo();
-      const infoStr = JSON.stringify(info, null, 2);
-      setDeviceInfo(infoStr);
-      Alert.alert('Herramientas Chafon', `Info de Dispositivo:\n${infoStr}`);
-    } catch (e: any) {
-      Alert.alert('Herramientas Chafon', e?.message ?? 'No se pudo leer la información del dispositivo.');
     }
   }
 
@@ -139,17 +100,19 @@ export default function ConfiguracionScreen() {
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <Text style={styles.title}>Configuración</Text>
 
-        <Text style={styles.section}>Sesión</Text>
+        {/* Sesión de Usuario */}
+        <Text style={styles.section}>Sesión de Usuario</Text>
         <View style={styles.row}>
-          <Ionicons name="person-outline" size={20} color="#667085" />
+          <Ionicons name="person-outline" size={20} color="#022449" />
           <Text style={styles.rowText}>{session?.username}</Text>
         </View>
 
-        <Text style={styles.section}>URL Base del Endpoint</Text>
+        {/* Endpoint Config */}
+        <Text style={styles.section}>URL Base del Endpoint API</Text>
         <View style={styles.urlContainer}>
           <TextInput
             style={[styles.input, { flex: 1, marginBottom: 0 }]}
-            placeholder="https://api.tuservicio.com"
+            placeholder="http://192.168.68.69:8000"
             value={apiBaseUrl}
             onChangeText={setApiBaseUrl}
             autoCapitalize="none"
@@ -197,24 +160,62 @@ export default function ConfiguracionScreen() {
               <Text style={styles.deviceMeta}>
                 {device.address} {device.rssi ? `· RSSI ${device.rssi}` : ''}{device.isCfDevice ? ' · CHAFON' : ''}
               </Text>
-            </View>
-            <Ionicons name="bluetooth-outline" size={22} color="#0b63ce" />
-          </Pressable>
-        ))}
+            </Pressable>
+          ) : (
+            <View style={styles.connectedActions}>
+              <Pressable style={styles.buttonSecondary} onPress={disconnect}>
+                <Ionicons name="power-outline" size={18} color="#d92d20" />
+                <Text style={[styles.buttonSecondaryText, { color: '#d92d20' }]}>Desconectar</Text>
+              </Pressable>
 
-        <Text style={styles.section}>Herramientas del SDK (SDK Tools)</Text>
-        <View style={styles.toolsContainer}>
-          <Pressable style={styles.toolButton} onPress={fetchBattery}>
-            <Ionicons name="battery-charging-outline" size={22} color="#475467" />
-            <Text style={styles.toolButtonText}>Ver Batería</Text>
-            {batteryLevel !== null && <Text style={styles.toolVal}>Batería: {batteryLevel}%</Text>}
-          </Pressable>
-          <Pressable style={styles.toolButton} onPress={fetchDeviceInfo}>
-            <Ionicons name="information-circle-outline" size={22} color="#475467" />
-            <Text style={styles.toolButtonText}>Info Dispositivo</Text>
-            {deviceInfo !== null && <Text style={styles.toolVal} numberOfLines={1}>Cargado</Text>}
-          </Pressable>
+              <Pressable style={styles.buttonSecondary} onPress={getBatteryLevel}>
+                <Ionicons name="battery-charging-outline" size={18} color="#0b63ce" />
+                <Text style={styles.buttonSecondaryText}>Batería</Text>
+              </Pressable>
+
+              <Pressable
+                style={[styles.buttonSecondary, readMode === 'rfid' && styles.buttonActive]}
+                onPress={() => setReadMode('rfid')}
+              >
+                <Ionicons name="radio-outline" size={18} color={readMode === 'rfid' ? '#fff' : '#0b63ce'} />
+                <Text style={[styles.buttonSecondaryText, readMode === 'rfid' && styles.buttonActiveText]}>RFID</Text>
+              </Pressable>
+
+              <Pressable
+                style={[styles.buttonSecondary, readMode === 'barcode' && styles.buttonActive]}
+                onPress={() => setReadMode('barcode')}
+              >
+                <Ionicons name="barcode-outline" size={18} color={readMode === 'barcode' ? '#fff' : '#0b63ce'} />
+                <Text style={[styles.buttonSecondaryText, readMode === 'barcode' && styles.buttonActiveText]}>Barcode</Text>
+              </Pressable>
+            </View>
+          )}
         </View>
+
+        {/* Dispositivos Escaneados */}
+        {!isConnected && scannedDevices.length > 0 && (
+          <View style={styles.devicesContainer}>
+            <Text style={styles.subSectionTitle}>Dispositivos detectados:</Text>
+            {scannedDevices.map((dev) => (
+              <Pressable
+                key={dev.address}
+                style={styles.deviceCard}
+                onPress={() => handleConnect(dev)}
+              >
+                <View style={{ flex: 1 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={styles.deviceName}>{dev.name || 'Terminal Chafon H103'}</Text>
+                  </View>
+                  <Text style={styles.deviceAddress}>{dev.address}</Text>
+                </View>
+                <View style={styles.connectBadge}>
+                  <Text style={styles.connectBadgeText}>Emparejar</Text>
+                  <Ionicons name="chevron-forward" size={16} color="#0b63ce" />
+                </View>
+              </Pressable>
+            ))}
+          </View>
+        )}
       </ScrollView>
     </Screen>
   );
@@ -246,5 +247,31 @@ const styles = StyleSheet.create({
   toolsContainer: { flexDirection: 'row', gap: 10, marginTop: 5 },
   toolButton: { flex: 1, backgroundColor: '#fff', padding: 12, borderRadius: 10, alignItems: 'center', gap: 6, borderWidth: 1, borderColor: '#eaecf0' },
   toolButtonText: { fontSize: 12, fontWeight: '600', color: '#344054' },
-  toolVal: { fontSize: 11, color: '#0b63ce', marginTop: 2 }
+  toolVal: { fontSize: 11, color: '#0b63ce', marginTop: 2 },
+
+  // New Chafon BLE Status & Button Styles
+  statusCard: { padding: 14, borderRadius: 12, borderWidth: 1, marginTop: 4, marginBottom: 10 },
+  statusCardConnected: { backgroundColor: '#ecfdf3', borderColor: '#a6f4c5' },
+  statusCardDisconnected: { backgroundColor: '#fef3f2', borderColor: '#fda29b' },
+  statusHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  statusTitle: { fontSize: 14, fontWeight: '800', color: '#101828' },
+  statusDetails: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: 'rgba(0,0,0,0.06)', gap: 4 },
+  statusDetailText: { fontSize: 13, color: '#344054' },
+  errorCard: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#fef3f2', padding: 10, borderRadius: 8, borderWidth: 1, borderColor: '#fda29b', marginBottom: 10 },
+  errorText: { fontSize: 12, color: '#b42318', flex: 1 },
+  actionsRow: { marginTop: 6, marginBottom: 12 },
+  buttonPrimary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, height: 48, backgroundColor: '#0b63ce', borderRadius: 10 },
+  buttonScanning: { backgroundColor: '#344054' },
+  buttonPrimaryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  connectedActions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  buttonSecondary: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: '#fff', borderWidth: 1, borderColor: '#d0d5dd' },
+  buttonSecondaryText: { fontSize: 13, fontWeight: '600', color: '#0b63ce' },
+  buttonActive: { backgroundColor: '#0b63ce', borderColor: '#0b63ce' },
+  buttonActiveText: { color: '#fff' },
+  devicesContainer: { marginTop: 10 },
+  subSectionTitle: { fontSize: 14, fontWeight: '700', color: '#344054', marginBottom: 8 },
+  deviceCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#fff', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#eaecf0', marginBottom: 8 },
+  deviceAddress: { fontSize: 11, color: '#667085', marginTop: 2 },
+  connectBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#eff8ff', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: '#b2ddff' },
+  connectBadgeText: { fontSize: 11, fontWeight: '700', color: '#0b63ce' }
 });
