@@ -263,19 +263,30 @@ class ChafonH103Module : Module() {
     val manager = context.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager ?: return
     val adapter = manager.adapter ?: return
     try {
-      adapter.bondedDevices?.forEach { device ->
+      val bonded = adapter.bondedDevices
+      android.util.Log.d("ChafonH103", "bondedDevices count = ${bonded?.size ?: -1}")
+      bonded?.forEach { device ->
         val address = device.address ?: return@forEach
         devices[address] = device
+        val name = try { device.name } catch (_: SecurityException) { null }
+        val isCf = name?.contains("CF", ignoreCase = true) == true || name?.contains("H103", ignoreCase = true) == true
+        android.util.Log.d("ChafonH103", "bonded device: name=$name, address=$address")
         sendEvent("onDeviceFound", mapOf(
           "id" to address,
           "address" to address,
-          "name" to (try { device.name } catch (_: SecurityException) { null }),
+          "name" to name,
           "rssi" to 0,
-          "isCfDevice" to true,
+          "isCfDevice" to isCf,
           "isBonded" to true
         ))
       }
-    } catch (_: SecurityException) {}
+    } catch (e: SecurityException) {
+      android.util.Log.e("ChafonH103", "SecurityException leyendo bondedDevices", e)
+      sendEvent("onScanError", mapOf("message" to (e.message ?: "Permisos insuficientes para consultar dispositivos vinculados")))
+    } catch (e: Exception) {
+      android.util.Log.e("ChafonH103", "Error leyendo bondedDevices", e)
+      sendEvent("onScanError", mapOf("message" to (e.message ?: "Error al obtener dispositivos vinculados")))
+    }
   }
 
   private fun findBondedDevice(address: String): BluetoothDevice? {

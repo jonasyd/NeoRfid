@@ -71,49 +71,17 @@ try {
 const emitter = new EventEmitter(Native as any);
 
 const ChafonH103 = {
-  isSupported: () => {
-    try {
-      return Native.isSupported();
-    } catch {
-      return false;
-    }
-  },
-  isEnabled: () => {
-    try {
-      return Native.isEnabled();
-    } catch {
-      return false;
-    }
-  },
-  requestPermissions: () => {
-    try {
-      return Native.requestPermissions();
-    } catch {
-      return Promise.resolve(false);
-    }
-  },
+  isSupported: () => Native.isSupported(),
+  isEnabled: () => Native.isEnabled(),
+  requestPermissions: () => Native.requestPermissions(),
   initialize: () => Native.initialize(),
   configureCharacteristics: (serviceUuid: string, notifyUuid: string, writeUuid: string) =>
     Native.configureCharacteristics(serviceUuid, notifyUuid, writeUuid),
   scan: (timeoutMs = 5000) => Native.scan(timeoutMs),
-  stopScan: () => {
-    try {
-      Native.stopScan();
-    } catch {}
-  },
+  stopScan: () => Native.stopScan(),
   connect: (address: string) => Native.connect(address),
-  disconnect: () => {
-    try {
-      Native.disconnect();
-    } catch {}
-  },
-  isConnected: () => {
-    try {
-      return Native.isConnected();
-    } catch {
-      return false;
-    }
-  },
+  disconnect: () => Native.disconnect(),
+  isConnected: () => Native.isConnected(),
   startInventory: (mode = 0, intervalMs = 100) => Native.startInventory(mode, intervalMs),
   stopInventory: () => Native.stopInventory(),
   setPower: (powerDbm: number) => Native.setPower(powerDbm),
