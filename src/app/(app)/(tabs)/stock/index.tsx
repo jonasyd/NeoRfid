@@ -1,6 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { Screen } from '@/components/Screen';
 import { getStock, searchModels, getSession } from '@/services/api';
 import { buildEpc, stringToHex, type EpcDetectionMode } from '@/services/epc';
@@ -441,10 +442,6 @@ function GroupedStockCard({
   const sess = getSession();
   const brandPrefix = sess?.brandPrefix || '';
 
-  const modelHexField = activeRow?.modelrfid ? stringToHex(activeRow.modelrfid) : '';
-  const colorHexField = activeRow?.modelcolrfid ? stringToHex(activeRow.modelcolrfid) : '';
-  const sizeHexField = activeRow?.modelsizfid ? stringToHex(activeRow.modelsizfid) : '';
-
   let modelEpcHex = '';
   let colorEpcHex = '';
   let sizeEpcHex = '';
@@ -452,12 +449,7 @@ function GroupedStockCard({
   if (activeRow) {
     try {
       if (activeRow.modelrfid) {
-        modelEpcHex = buildEpc({
-          brandPrefix,
-          modelrfid: activeRow.modelrfid,
-          modelcolrfid: activeRow.modelcolrfid,
-          modelsizfid: activeRow.modelsizfid,
-        }, 'model').epc;
+        modelEpcHex = buildEpc({ brandPrefix, modelrfid: activeRow.modelrfid }, 'model').epc;
       }
       if (activeRow.modelrfid && activeRow.modelcolrfid) {
         colorEpcHex = buildEpc({ brandPrefix, modelrfid: activeRow.modelrfid, modelcolrfid: activeRow.modelcolrfid }, 'color').epc;
@@ -638,23 +630,23 @@ function GroupedStockCard({
           {showRfidDetails && (
             <View style={styles.accordionBody}>
               <Text style={styles.rfidCodeText}>
-                modelrfid: <Text style={styles.codeVal}>{activeRow.modelrfid || '-'}</Text> {modelHexField ? <Text style={styles.codeValHex}>({modelHexField})</Text> : null}
+                modelrfid: <Text style={styles.codeVal}>{activeRow.modelrfid || '-'}</Text>
               </Text>
               <Text style={styles.rfidCodeText}>
-                modelcolrfid: <Text style={styles.codeVal}>{activeRow.modelcolrfid || '-'}</Text> {colorHexField ? <Text style={styles.codeValHex}>({colorHexField})</Text> : null}
+                modelcolrfid: <Text style={styles.codeVal}>{activeRow.modelcolrfid || '-'}</Text>
               </Text>
               <Text style={styles.rfidCodeText}>
-                modelsizfid: <Text style={styles.codeVal}>{activeRow.modelsizfid || '-'}</Text> {sizeHexField ? <Text style={styles.codeValHex}>({sizeHexField})</Text> : null}
+                modelsizfid: <Text style={styles.codeVal}>{activeRow.modelsizfid || '-'}</Text>
               </Text>
               <View style={{ height: 1, backgroundColor: '#eaecf0', marginVertical: 6 }} />
               <Text style={styles.rfidCodeText}>
-                EPC Modelo (HEX): <Text style={styles.codeValHex}>{modelEpcHex || '-'}</Text>
+                HEX Modelo: <Text style={styles.codeValHex}>{modelEpcHex || '-'}</Text>
               </Text>
               <Text style={styles.rfidCodeText}>
-                EPC Color (HEX): <Text style={styles.codeValHex}>{colorEpcHex || '-'}</Text>
+                HEX Color: <Text style={styles.codeValHex}>{colorEpcHex || '-'}</Text>
               </Text>
               <Text style={styles.rfidCodeText}>
-                EPC Talle (HEX): <Text style={styles.codeValHex}>{sizeEpcHex || '-'}</Text>
+                HEX Talle: <Text style={styles.codeValHex}>{sizeEpcHex || '-'}</Text>
               </Text>
             </View>
           )}

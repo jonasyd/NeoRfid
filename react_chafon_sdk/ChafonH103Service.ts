@@ -1,4 +1,3 @@
-import ChafonH103 from '@modules/chafon-h103';
 import {
   ChafonH103Protocol,
   TagInfo,
@@ -65,42 +64,7 @@ export class ChafonH103Service {
   // Timeout handlers
   private batteryTimeoutTimer: any = null;
 
-  private constructor() {
-    this.setupNativeListeners();
-  }
-
-  private setupNativeListeners(): void {
-    try {
-      ChafonH103.addDeviceListener((dev) => {
-        if (dev && this.callbacks.onDeviceFound) {
-          this.callbacks.onDeviceFound({
-            name: dev.name || 'Chafon CF-H103',
-            address: dev.address,
-            rssi: dev.rssi,
-            rawDevice: dev,
-          });
-        }
-      });
-
-      ChafonH103.addTagListener((tag) => {
-        if (tag && this.callbacks.onTagRead) {
-          this.callbacks.onTagRead({
-            epc: tag.epc,
-            rssi: tag.rssi,
-            timestamp: Date.now(),
-          });
-        }
-      });
-
-      ChafonH103.addConnectionListener((state) => {
-        if (state === 'connected') {
-          this.isConnectedState = true;
-        } else {
-          this.handleDisconnected();
-        }
-      });
-    } catch {}
-  }
+  private constructor() {}
 
   static getInstance(): ChafonH103Service {
     if (!ChafonH103Service.instance) {
@@ -151,23 +115,10 @@ export class ChafonH103Service {
         throw err;
       }
     }
-
-    try {
-      await ChafonH103.initialize();
-      await ChafonH103.scan(7000);
-      return 'scan_started_native';
-    } catch (e: any) {
-      if (this.callbacks.onScanError) {
-        this.callbacks.onScanError(e.message || 'Scan error');
-      }
-      throw e;
-    }
+    return 'scan_not_supported_web_bluetooth';
   }
 
   async stopScan(): Promise<string> {
-    try {
-      ChafonH103.stopScan();
-    } catch {}
     return 'scan_stopped';
   }
 
@@ -176,52 +127,46 @@ export class ChafonH103Service {
    */
   async connect(deviceOrAddress: any): Promise<boolean> {
     try {
-      let address = typeof deviceOrAddress === 'string' ? deviceOrAddress : deviceOrAddress?.address;
+      let device = deviceOrAddress;
 
-      if (typeof navigator !== 'undefined' && (navigator as any).bluetooth) {
-        let device = deviceOrAddress;
-        if (typeof deviceOrAddress === 'string') {
+      if (typeof deviceOrAddress === 'string') {
+        if (typeof navigator !== 'undefined' && (navigator as any).bluetooth) {
           device = await (navigator as any).bluetooth.requestDevice({
             filters: [{ services: [ChafonH103Service.SERVICE_UUID] }],
           });
         }
-        if (device && device.gatt) {
-          this.currentDevice = device;
-          if (device.addEventListener) {
-            device.addEventListener('gattserverdisconnected', () => {
-              this.handleDisconnected();
-            });
-          }
-          this.gattServer = await device.gatt.connect();
-          const service = await this.gattServer.getPrimaryService(ChafonH103Service.SERVICE_UUID);
-          this.writeCharacteristic = await service.getCharacteristic(ChafonH103Service.WRITE_UUID);
-          this.notifyCharacteristic = await service.getCharacteristic(ChafonH103Service.NOTIFY_UUID);
-          await this.notifyCharacteristic.startNotifications();
-          this.notifyCharacteristic.addEventListener(
-            'characteristicvaluechanged',
-            (event: any) => this.handleNotifyValue(event.target.value)
-          );
-          this.isConnectedState = true;
-          await this.setRfidMode();
-          return true;
-        }
       }
 
-      // Fallback for Native Expo environment
-      if (!address && deviceOrAddress?.rawDevice?.address) {
-        address = deviceOrAddress.rawDevice.address;
+      if (!device) {
+        throw new Error('No Bluetooth device specified');
       }
-      if (!address) throw new Error('No MAC/Address specified');
 
-      await ChafonH103.initialize();
-      await ChafonH103.configureCharacteristics(
-        ChafonH103Service.SERVICE_UUID,
-        ChafonH103Service.NOTIFY_UUID,
-        ChafonH103Service.WRITE_UUID
+      this.currentDevice = device;
+
+      if (device.addEventListener) {
+        device.addEventListener('gattserverdisconnected', () => {
+          this.handleDisconnected();
+        });
+      }
+
+      this.gattServer = await device.gatt.connect();
+      const service = await this.gattServer.getPrimaryService(ChafonH103Service.SERVICE_UUID);
+
+      this.writeCharacteristic = await service.getCharacteristic(ChafonH103Service.WRITE_UUID);
+      this.notifyCharacteristic = await service.getCharacteristic(ChafonH103Service.NOTIFY_UUID);
+
+      await this.notifyCharacteristic.startNotifications();
+      this.notifyCharacteristic.addEventListener(
+        'characteristicvaluechanged',
+        (event: any) => this.handleNotifyValue(event.target.value)
       );
-      const connected = await ChafonH103.connect(address);
-      this.isConnectedState = connected;
-      return connected;
+
+      this.isConnectedState = true;
+
+      // Configure initial state: default to RFID mode
+      await this.setRfidMode();
+
+      return true;
     } catch (err: any) {
       this.isConnectedState = false;
       if (this.callbacks.onReadError) {
@@ -243,7 +188,6 @@ export class ChafonH103Service {
       if (this.gattServer && this.gattServer.connected) {
         this.gattServer.disconnect();
       }
-      ChafonH103.disconnect();
       this.handleDisconnected();
       return true;
     } catch (e) {
@@ -435,16 +379,6 @@ export class ChafonH103Service {
   // ========== Public Operations ==========
 
   async getBatteryLevel(): Promise<string> {
-    if (typeof navigator === 'undefined' || !(navigator as any).bluetooth) {
-      try {
-        const level = await ChafonH103.getBattery();
-        if (this.callbacks.onBatteryLevel) {
-          this.callbacks.onBatteryLevel({ level });
-        }
-        return 'battery_level_received';
-      } catch {}
-    }
-
     const cmd = ChafonH103Protocol.buildGetBatteryCapacityCmd();
     const ok = await this.writeData(cmd);
 
