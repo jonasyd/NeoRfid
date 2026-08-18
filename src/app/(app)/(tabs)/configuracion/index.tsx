@@ -125,72 +125,45 @@ export default function ConfiguracionScreen() {
 
         <Text style={styles.section}>Conexión a Terminal RFID (BLE)</Text>
         <Text style={styles.status}>
-          Estado de Terminal: <Text style={{ fontWeight: '700', color: connection === 'connected' ? '#12b76a' : '#f04438' }}>{connection === 'connected' ? 'Conectado' : 'Desconectado'}</Text>
+          Estado de Terminal: <Text style={{ fontWeight: '700', color: isConnected ? '#12b76a' : '#f04438' }}>{isConnected ? 'Conectado' : 'Desconectado'}</Text>
         </Text>
         <Text style={styles.help}>Presione &quot;Buscar Terminales&quot; para detectar automáticamente el lector Chafon H103 vía BLE.</Text>
 
         <View style={styles.actions}>
-          <Pressable style={styles.button} onPress={scan}>
-            <Text style={styles.buttonText}>{scanning ? 'Buscando Terminales…' : 'Buscar Terminales BLE'}</Text>
+          <Pressable style={[styles.button, isScanning && styles.buttonScanning]} onPress={handleStartScan}>
+            <Text style={styles.buttonText}>{isScanning ? 'Buscando Terminales…' : 'Buscar Terminales BLE'}</Text>
           </Pressable>
         </View>
 
-        {devices.map((device) => (
-          <Pressable
-            key={device.address}
-            style={styles.device}
-            onPress={async () => {
-              try {
-                await prepareConnection();
-                await ChafonH103.connect(device.address);
-              } catch (e: any) {
-                Alert.alert('CHAFON', e?.message ?? 'No se pudo conectar.');
-              }
-            }}
-          >
-            <View style={{ flex: 1 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Text style={styles.deviceName}>{device.name || 'Dispositivo sin nombre'}</Text>
-                {device.isBonded && (
-                  <View style={styles.bondedBadge}>
-                    <Text style={styles.bondedText}>Vinculado</Text>
-                  </View>
-                )}
-              </View>
-              <Text style={styles.deviceMeta}>
-                {device.address} {device.rssi ? `· RSSI ${device.rssi}` : ''}{device.isCfDevice ? ' · CHAFON' : ''}
-              </Text>
+        {isConnected && (
+          <View style={styles.connectedActions}>
+            <Pressable style={styles.buttonSecondary} onPress={disconnect}>
+              <Ionicons name="power-outline" size={18} color="#d92d20" />
+              <Text style={[styles.buttonSecondaryText, { color: '#d92d20' }]}>Desconectar</Text>
             </Pressable>
-          ) : (
-            <View style={styles.connectedActions}>
-              <Pressable style={styles.buttonSecondary} onPress={disconnect}>
-                <Ionicons name="power-outline" size={18} color="#d92d20" />
-                <Text style={[styles.buttonSecondaryText, { color: '#d92d20' }]}>Desconectar</Text>
-              </Pressable>
 
-              <Pressable style={styles.buttonSecondary} onPress={getBatteryLevel}>
-                <Ionicons name="battery-charging-outline" size={18} color="#0b63ce" />
-                <Text style={styles.buttonSecondaryText}>Batería</Text>
-              </Pressable>
+            <Pressable style={styles.buttonSecondary} onPress={getBatteryLevel}>
+              <Ionicons name="battery-charging-outline" size={18} color="#0b63ce" />
+              <Text style={styles.buttonSecondaryText}>Batería</Text>
+            </Pressable>
 
-              <Pressable
-                style={[styles.buttonSecondary, readMode === 'rfid' && styles.buttonActive]}
-                onPress={() => setReadMode('rfid')}
-              >
-                <Ionicons name="radio-outline" size={18} color={readMode === 'rfid' ? '#fff' : '#0b63ce'} />
-                <Text style={[styles.buttonSecondaryText, readMode === 'rfid' && styles.buttonActiveText]}>RFID</Text>
-              </Pressable>
+            <Pressable
+              style={[styles.buttonSecondary, readMode === 'rfid' && styles.buttonActive]}
+              onPress={() => setReadMode('rfid')}
+            >
+              <Ionicons name="radio-outline" size={18} color={readMode === 'rfid' ? '#fff' : '#0b63ce'} />
+              <Text style={[styles.buttonSecondaryText, readMode === 'rfid' && styles.buttonActiveText]}>RFID</Text>
+            </Pressable>
 
-              <Pressable
-                style={[styles.buttonSecondary, readMode === 'barcode' && styles.buttonActive]}
-                onPress={() => setReadMode('barcode')}
-              >
-                <Ionicons name="barcode-outline" size={18} color={readMode === 'barcode' ? '#fff' : '#0b63ce'} />
-                <Text style={[styles.buttonSecondaryText, readMode === 'barcode' && styles.buttonActiveText]}>Barcode</Text>
-              </Pressable>
-            </View>
-          )}
-        </View>
+            <Pressable
+              style={[styles.buttonSecondary, readMode === 'barcode' && styles.buttonActive]}
+              onPress={() => setReadMode('barcode')}
+            >
+              <Ionicons name="barcode-outline" size={18} color={readMode === 'barcode' ? '#fff' : '#0b63ce'} />
+              <Text style={[styles.buttonSecondaryText, readMode === 'barcode' && styles.buttonActiveText]}>Barcode</Text>
+            </Pressable>
+          </View>
+        )}
 
         {/* Dispositivos Escaneados */}
         {!isConnected && scannedDevices.length > 0 && (
