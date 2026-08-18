@@ -34,7 +34,7 @@ class ChafonH103Module : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("ChafonH103")
-    Events("onDeviceFound", "onTagRead", "onConnectionState")
+    Events("onDeviceFound", "onTagRead", "onConnectionState", "onScanError")
 
     Function("isSupported") {
       val manager = appContext.reactContext?.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
@@ -100,17 +100,27 @@ class ChafonH103Module : Module() {
           }
 
           override fun onBtScanFail(errorCode: Int) {
-            sendEvent("onDeviceFound", mapOf("error" to errorCode))
+            sendEvent("onScanError", mapOf("errorCode" to errorCode, "message" to "Chafon SDK scan failed: $errorCode"))
           }
         })
-      } catch (_: Exception) {}
+      } catch (e: Exception) {
+        sendEvent("onScanError", mapOf("message" to (e.message ?: "Error al iniciar escaneo Chafon SDK")))
+      }
 
       // 3. Escaneo estándar Android LE como fallback para capturar la terminal H103 visible en Bluetooth
       try {
         val manager = appContext.reactContext?.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
         val scanner = manager?.adapter?.bluetoothLeScanner
-        scanner?.startScan(leScanCallback)
-      } catch (_: SecurityException) {} catch (_: Exception) {}
+        if (scanner != null) {
+          scanner.startScan(leScanCallback)
+        } else {
+          sendEvent("onScanError", mapOf("message" to "BluetoothLeScanner no disponible o Bluetooth apagado"))
+        }
+      } catch (e: SecurityException) {
+        sendEvent("onScanError", mapOf("message" to (e.message ?: "Permiso de Bluetooth denegado al escanear")))
+      } catch (e: Exception) {
+        sendEvent("onScanError", mapOf("message" to (e.message ?: "Error en escaneo BLE de Android")))
+      }
 
       if (timeoutMs > 0) {
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -253,19 +263,30 @@ class ChafonH103Module : Module() {
     val manager = context.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager ?: return
     val adapter = manager.adapter ?: return
     try {
-      adapter.bondedDevices?.forEach { device ->
+      val bonded = adapter.bondedDevices
+      android.util.Log.d("ChafonH103", "bondedDevices count = ${bonded?.size ?: -1}")
+      bonded?.forEach { device ->
         val address = device.address ?: return@forEach
         devices[address] = device
+        val name = try { device.name } catch (_: SecurityException) { null }
+        val isCf = name?.contains("CF", ignoreCase = true) == true || name?.contains("H103", ignoreCase = true) == true
+        android.util.Log.d("ChafonH103", "bonded device: name=$name, address=$address")
         sendEvent("onDeviceFound", mapOf(
           "id" to address,
           "address" to address,
-          "name" to (try { device.name } catch (_: SecurityException) { null }),
+          "name" to name,
           "rssi" to 0,
-          "isCfDevice" to true,
+          "isCfDevice" to isCf,
           "isBonded" to true
         ))
       }
-    } catch (_: SecurityException) {}
+    } catch (e: SecurityException) {
+      android.util.Log.e("ChafonH103", "SecurityException leyendo bondedDevices", e)
+      sendEvent("onScanError", mapOf("message" to (e.message ?: "Permisos insuficientes para consultar dispositivos vinculados")))
+    } catch (e: Exception) {
+      android.util.Log.e("ChafonH103", "Error leyendo bondedDevices", e)
+      sendEvent("onScanError", mapOf("message" to (e.message ?: "Error al obtener dispositivos vinculados")))
+    }
   }
 
   private fun findBondedDevice(address: String): BluetoothDevice? {
@@ -306,6 +327,14 @@ class ChafonH103Module : Module() {
   private val leScanCallback = object : ScanCallback() {
     override fun onScanResult(callbackType: Int, result: android.bluetooth.le.ScanResult) {
       handleScanResult(result)
+    }
+
+    override fun onBatchScanResults(results: MutableList<android.bluetooth.le.ScanResult>) {
+      results.forEach { handleScanResult(it) }
+    }
+
+    override fun onScanFailed(errorCode: Int) {
+      sendEvent("onScanError", mapOf("errorCode" to errorCode, "message" to "Android BLE scan failed (code $errorCode)"))
     }
   }
 

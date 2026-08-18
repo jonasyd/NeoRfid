@@ -5,6 +5,7 @@ import { Screen } from '@/components/Screen';
 import { useSession } from '@/context/SessionContext';
 import { getSavedApiBaseUrl, saveApiBaseUrl } from '@/services/api';
 import { useChafonH103 } from '../../../../../react_chafon_sdk/useChafonH103';
+import ChafonH103, { type ChafonDevice } from '@modules/chafon-h103';
 
 const DEFAULT_SERVICE_UUID = '0000fee7-0000-1000-8000-00805f9b34fb';
 const DEFAULT_NOTIFY_UUID = '000036f1-0000-1000-8000-00805f9b34fb';
@@ -18,7 +19,7 @@ export default function ConfiguracionScreen() {
   const [supported, setSupported] = useState<boolean | null>(null);
   const [devices, setDevices] = useState<ChafonDevice[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [connection, setConnection] = useState('disconnected');
+  const [connection, setConnection] = useState<'connected' | 'disconnected'>('disconnected');
 
   // URL Base dynamic config
   const [apiBaseUrl, setApiBaseUrl] = useState('');
@@ -41,48 +42,69 @@ export default function ConfiguracionScreen() {
 
   useEffect(() => {
     getSavedApiBaseUrl().then(setApiBaseUrl).catch(() => undefined);
+
+    const devSub = ChafonH103.addDeviceListener((dev) => {
+      setDevices((prev) => {
+        if (prev.some((d) => d.address === dev.address)) return prev;
+        return [...prev, dev];
+      });
+    });
+
+    const connSub = ChafonH103.addConnectionListener((st) => {
+      setConnection(st);
+    });
+
+    const errSub = ChafonH103.addScanErrorListener((err) => {
+      Alert.alert('Escaneo BLE', err.message || 'Error durante el escaneo BLE.');
+    });
+
+    return () => {
+      devSub.remove();
+      connSub.remove();
+      errSub.remove();
+    };
   }, []);
 
-  async function requestBluetoothPermissions() {
+  async function requestBluetoothPermissions(): Promise<boolean> {
     if (PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN && PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT) {
-      const result = await PermissionsAndroid.requestMultiple([
+      const res = await PermissionsAndroid.requestMultiple([
         PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
         PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
         PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
       ]);
-      const granted = Object.values(result).every((value) => value === PermissionsAndroid.RESULTS.GRANTED);
-      if (!granted) throw new Error('Concedé los permisos Bluetooth y Ubicación para continuar.');
+
+      const scanGranted = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.GRANTED;
+      const connectGranted = res[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.GRANTED;
+
+      if (!scanGranted || !connectGranted) {
+        return false;
+      }
     }
     await ChafonH103.initialize();
+    return true;
   }
 
   async function prepareConnection(s = serviceUuid, n = notifyUuid, w = writeUuid) {
     const finalS = s || DEFAULT_SERVICE_UUID;
     const finalN = n || DEFAULT_NOTIFY_UUID;
     const finalW = w || DEFAULT_WRITE_UUID;
-    await initialize();
+    await ChafonH103.initialize();
     await ChafonH103.configureCharacteristics(finalS, finalN, finalW);
   }
 
   async function handleStartScan() {
     try {
-      await requestBluetoothPermissions();
-      if (isScanning) {
-        await stopScan();
-      } else {
-        await startScan();
+      const granted = await requestBluetoothPermissions();
+      if (!granted) {
+        throw new Error('Concedé los permisos Bluetooth y Ubicación para continuar.');
       }
+      setScanning(true);
+      setDevices([]);
+      await ChafonH103.scan(8000);
+      setTimeout(() => setScanning(false), 8000);
     } catch (e: any) {
+      setScanning(false);
       Alert.alert('Chafon BLE', e?.message ?? 'No se pudo escanear.');
-    }
-  }
-
-  async function handleConnect(device: any) {
-    try {
-      await prepareConnection();
-      Alert.alert('CHAFON', 'SDK inicializado.');
-    } catch (e: any) {
-      Alert.alert('Chafon Terminal', e?.message ?? 'Error de conexión.');
     }
   }
 
@@ -125,24 +147,25 @@ export default function ConfiguracionScreen() {
 
         <Text style={styles.section}>Conexión a Terminal RFID (BLE)</Text>
         <Text style={styles.status}>
-          Estado de Terminal: <Text style={{ fontWeight: '700', color: connection === 'connected' ? '#12b76a' : '#f04438' }}>{connection === 'connected' ? 'Conectado' : 'Desconectado'}</Text>
+          Estado de Terminal: <Text style={{ fontWeight: '700', color: (isConnected || connection === 'connected') ? '#12b76a' : '#f04438' }}>{(isConnected || connection === 'connected') ? 'Conectado' : 'Desconectado'}</Text>
         </Text>
         <Text style={styles.help}>Presione &quot;Buscar Terminales&quot; para detectar automáticamente el lector Chafon H103 vía BLE.</Text>
 
         <View style={styles.actions}>
-          <Pressable style={styles.button} onPress={scan}>
-            <Text style={styles.buttonText}>{scanning ? 'Buscando Terminales…' : 'Buscar Terminales BLE'}</Text>
+          <Pressable style={[styles.button, (isScanning || scanning) && styles.buttonScanning]} onPress={handleStartScan}>
+            <Text style={styles.buttonText}>{(isScanning || scanning) ? 'Buscando Terminales…' : 'Buscar Terminales BLE'}</Text>
           </Pressable>
         </View>
 
         {devices.map((device) => (
           <Pressable
             key={device.address}
-            style={styles.device}
+            style={styles.deviceCard}
             onPress={async () => {
               try {
                 await prepareConnection();
-                await ChafonH103.connect(device.address);
+                const ok = await ChafonH103.connect(device.address);
+                if (ok) setConnection('connected');
               } catch (e: any) {
                 Alert.alert('CHAFON', e?.message ?? 'No se pudo conectar.');
               }
@@ -150,72 +173,52 @@ export default function ConfiguracionScreen() {
           >
             <View style={{ flex: 1 }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Text style={styles.deviceName}>{device.name || 'Dispositivo sin nombre'}</Text>
+                <Text style={styles.deviceName}>{device.name || 'Terminal Chafon H103'}</Text>
                 {device.isBonded && (
                   <View style={styles.bondedBadge}>
                     <Text style={styles.bondedText}>Vinculado</Text>
                   </View>
                 )}
               </View>
-              <Text style={styles.deviceMeta}>
-                {device.address} {device.rssi ? `· RSSI ${device.rssi}` : ''}{device.isCfDevice ? ' · CHAFON' : ''}
-              </Text>
-            </Pressable>
-          ) : (
-            <View style={styles.connectedActions}>
-              <Pressable style={styles.buttonSecondary} onPress={disconnect}>
-                <Ionicons name="power-outline" size={18} color="#d92d20" />
-                <Text style={[styles.buttonSecondaryText, { color: '#d92d20' }]}>Desconectar</Text>
-              </Pressable>
-
-              <Pressable style={styles.buttonSecondary} onPress={getBatteryLevel}>
-                <Ionicons name="battery-charging-outline" size={18} color="#0b63ce" />
-                <Text style={styles.buttonSecondaryText}>Batería</Text>
-              </Pressable>
-
-              <Pressable
-                style={[styles.buttonSecondary, readMode === 'rfid' && styles.buttonActive]}
-                onPress={() => setReadMode('rfid')}
-              >
-                <Ionicons name="radio-outline" size={18} color={readMode === 'rfid' ? '#fff' : '#0b63ce'} />
-                <Text style={[styles.buttonSecondaryText, readMode === 'rfid' && styles.buttonActiveText]}>RFID</Text>
-              </Pressable>
-
-              <Pressable
-                style={[styles.buttonSecondary, readMode === 'barcode' && styles.buttonActive]}
-                onPress={() => setReadMode('barcode')}
-              >
-                <Ionicons name="barcode-outline" size={18} color={readMode === 'barcode' ? '#fff' : '#0b63ce'} />
-                <Text style={[styles.buttonSecondaryText, readMode === 'barcode' && styles.buttonActiveText]}>Barcode</Text>
-              </Pressable>
+              <Text style={styles.deviceAddress}>{device.address} {device.rssi ? `· RSSI ${device.rssi}` : ''}</Text>
             </View>
-          )}
-        </View>
+            <View style={styles.connectBadge}>
+              <Text style={styles.connectBadgeText}>Conectar</Text>
+              <Ionicons name="chevron-forward" size={16} color="#0b63ce" />
+            </View>
+          </Pressable>
+        ))}
 
-        {/* Dispositivos Escaneados */}
-        {!isConnected && scannedDevices.length > 0 && (
-          <View style={styles.devicesContainer}>
-            <Text style={styles.subSectionTitle}>Dispositivos detectados:</Text>
-            {scannedDevices.map((dev) => (
-              <Pressable
-                key={dev.address}
-                style={styles.deviceCard}
-                onPress={() => handleConnect(dev)}
-              >
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={styles.deviceName}>{dev.name || 'Terminal Chafon H103'}</Text>
-                  </View>
-                  <Text style={styles.deviceAddress}>{dev.address}</Text>
-                </View>
-                <View style={styles.connectBadge}>
-                  <Text style={styles.connectBadgeText}>Emparejar</Text>
-                  <Ionicons name="chevron-forward" size={16} color="#0b63ce" />
-                </View>
-              </Pressable>
-            ))}
+        {isConnected && (
+          <View style={styles.connectedActions}>
+            <Pressable style={styles.buttonSecondary} onPress={disconnect}>
+              <Ionicons name="power-outline" size={18} color="#d92d20" />
+              <Text style={[styles.buttonSecondaryText, { color: '#d92d20' }]}>Desconectar</Text>
+            </Pressable>
+
+            <Pressable style={styles.buttonSecondary} onPress={getBatteryLevel}>
+              <Ionicons name="battery-charging-outline" size={18} color="#0b63ce" />
+              <Text style={styles.buttonSecondaryText}>Batería</Text>
+            </Pressable>
+
+            <Pressable
+              style={[styles.buttonSecondary, readMode === 'rfid' && styles.buttonActive]}
+              onPress={() => setReadMode('rfid')}
+            >
+              <Ionicons name="radio-outline" size={18} color={readMode === 'rfid' ? '#fff' : '#0b63ce'} />
+              <Text style={[styles.buttonSecondaryText, readMode === 'rfid' && styles.buttonActiveText]}>RFID</Text>
+            </Pressable>
+
+            <Pressable
+              style={[styles.buttonSecondary, readMode === 'barcode' && styles.buttonActive]}
+              onPress={() => setReadMode('barcode')}
+            >
+              <Ionicons name="barcode-outline" size={18} color={readMode === 'barcode' ? '#fff' : '#0b63ce'} />
+              <Text style={[styles.buttonSecondaryText, readMode === 'barcode' && styles.buttonActiveText]}>Barcode</Text>
+            </Pressable>
           </View>
         )}
+
       </ScrollView>
     </Screen>
   );
