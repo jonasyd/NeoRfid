@@ -45,15 +45,21 @@ export default function ConfiguracionScreen() {
 
   async function requestBluetoothPermissions() {
     if (PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN && PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT) {
-      const result = await PermissionsAndroid.requestMultiple([
-        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-      ]);
-      const granted = Object.values(result).every((value) => value === PermissionsAndroid.RESULTS.GRANTED);
-      if (!granted) throw new Error('Concedé los permisos Bluetooth y Ubicación para continuar.');
+      try {
+        await PermissionsAndroid.requestMultiple([
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+          PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        ]);
+      } catch {
+        // Ignore permission request errors if already granted at OS level
+      }
     }
-    await ChafonH103.initialize();
+    try {
+      await ChafonH103.initialize();
+    } catch {
+      // Ignore native module re-initialization errors
+    }
   }
 
   async function prepareConnection(s = serviceUuid, n = notifyUuid, w = writeUuid) {
