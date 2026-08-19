@@ -1,17 +1,33 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, Vibration, View } from 'react-native';
 import { Screen } from '@/components/Screen';
 import { getStock, searchModels, getSession } from '@/services/api';
-import { buildEpc, stringToHex, type EpcDetectionMode } from '@/services/epc';
+import { buildEpc, stringToHex, hexPassthrough, breakdownEpc, type EpcDetectionMode } from '@/services/epc';
 import type { SearchResult, StockRow, Deposito } from '@/types/api';
-import ChafonH103, { type ChafonTag } from '@modules/chafon-h103';
+import ChafonH103, { getChafonStatus, hexToAscii, INVENTORY_WINDOW_SECONDS, type ChafonTag } from '@modules/chafon-h103';
 import { useSession } from '@/context/SessionContext';
+import { useChafonStatus } from '@/hooks/useChafonStatus';
+
+const POWER_MIN = 1;
+const POWER_MAX = 33;
 
 const MIN_SEARCH = 3;
 const DEBOUNCE_MS = 350;
 
-type DetectionState = { mode: EpcDetectionMode; epc: string; running: boolean; lastTag?: ChafonTag } | null;
+type DetectionState = {
+  mode: EpcDetectionMode;
+  epc: string;
+  running: boolean;
+  /** Última lectura que coincide con el prefijo buscado. */
+  lastTag?: ChafonTag;
+  /** Total de tags leídos desde que arrancó la búsqueda (coincidan o no). */
+  reads: number;
+  /** Cuántos coincidieron con el prefijo. */
+  matches: number;
+  /** Última lectura recibida, coincida o no: sirve para diagnosticar prefijos que no matchean. */
+  lastAnyEpc?: string;
+} | null;
 
 export default function StockScreen() {
   const { session, setDeposito } = useSession();
@@ -32,18 +48,60 @@ export default function StockScreen() {
   // Dropdown de depósitos
   const [showDepositDropdown, setShowDepositDropdown] = useState(false);
 
-  // Calibración de potencia (0 - 30 dBm)
-  const [rfidPower, setRfidPower] = useState(20);
+  // Estado del lector compartido con el tab de Configuración (conexión, modo, potencia, batería).
+  const chafon = useChafonStatus();
+
+  // Potencia mostrada: la real del equipo si ya la conocemos, si no un valor por defecto.
+  const [powerOverride, setPowerOverride] = useState<number | null>(null);
+  const rfidPower = powerOverride ?? chafon.power ?? 20;
+
+  const [batteryLoading, setBatteryLoading] = useState(false);
 
   // Filtro de conStock (default: false)
   const [conStockFilter, setConStockFilter] = useState(false);
 
   const requestId = useRef(0);
   const inputRef = useRef<any>(null);
+  const detectionRunningRef = useRef(false);
+  const lastPulseRef = useRef(0);
+  // El listener de tags se registra una sola vez; estos refs le dan acceso al estado actual
+  // sin recrear la suscripción en cada render.
+  const onBarcodeRef = useRef<(value: string) => void>(() => {});
 
   useEffect(() => {
     const sub = ChafonH103.addTagListener((tag: ChafonTag) => {
-      setDetection((current) => current ? { ...current, lastTag: tag } : current);
+      // En modo transparente el código de barras llega por este mismo canal (antes entraba
+      // "tipeado" porque el equipo estaba en modo teclado HID). Lo decodificamos y buscamos.
+      if (getChafonStatus().readMode === 'barcode') {
+        const value = hexToAscii(tag.epc);
+        if (value) onBarcodeRef.current(value);
+        return;
+      }
+
+      const matched = tag.isMatch !== false;
+      setDetection((current) =>
+        current
+          ? {
+              ...current,
+              reads: current.reads + 1,
+              matches: current.matches + (matched ? 1 : 0),
+              lastTag: matched ? tag : current.lastTag,
+              lastAnyEpc: tag.epc,
+            }
+          : current
+      );
+
+      // Guía de proximidad en el teléfono: vibra en cada lectura del tag buscado, más seguido
+      // y más fuerte cuanto mejor es la señal (más cerca). Complementa el pitido del equipo.
+      if (!detectionRunningRef.current || !matched) return;
+      const now = Date.now();
+      const rssi = typeof tag.rssi === 'number' ? tag.rssi : -90;
+      // RSSI típico: -80 (lejos) .. -30 (encima). Lo mapeamos a un intervalo de 600ms a 90ms.
+      const closeness = Math.max(0, Math.min(1, (rssi + 80) / 50));
+      const minGap = 600 - closeness * 510;
+      if (now - lastPulseRef.current < minGap) return;
+      lastPulseRef.current = now;
+      Vibration.vibrate(Math.round(12 + closeness * 45));
     });
     return () => sub.remove();
   }, []);
@@ -82,6 +140,26 @@ export default function StockScreen() {
     return () => clearTimeout(timer);
   }, [query, searchMode, selectedSku]);
 
+  /**
+   * Corta la detección RFID en curso. Se llama al iniciar cualquier búsqueda nueva: la guía
+   * de proximidad corresponde al ítem que se estaba buscando y deja de tener sentido apenas
+   * se consulta otro modelo.
+   */
+  async function clearDetection() {
+    if (!detectionRunningRef.current) {
+      setDetection(null);
+      return;
+    }
+    try {
+      await ChafonH103.stopInventory();
+      await ChafonH103.clearDetectionMask();
+    } catch {
+      // Si el equipo no responde igual limpiamos la guía en pantalla.
+    } finally {
+      setDetection(null);
+    }
+  }
+
   async function loadStockForSku(sku: string, constockParam = conStockFilter) {
     setLoadingStock(true);
     setError('');
@@ -116,23 +194,25 @@ export default function StockScreen() {
     await loadStockForSku(sku);
   }
 
-  // Activa la lectura 2D enfoca el campo de texto y cambia a modo barcode
+  // Activa la lectura 2D: pone la terminal Chafon en modo Barcode de verdad (antes solo
+  // cambiaba el modo de búsqueda local, sin avisarle nada al hardware), enfoca el campo de
+  // texto y cambia a modo barcode en la UI.
   async function handleBarcodeSearch() {
-    setSearchMode('barcode');
     setQuery('');
     setSuggestions([]);
     setStock([]);
     setSelectedSku('');
     setError('');
-    setTimeout(() => {
-      inputRef.current?.focus();
-    }, 100);
+    // changeReadMode pone la terminal en modo Barcode, cambia el modo de búsqueda local y
+    // enfoca el campo de texto para recibir la lectura.
+    await changeReadMode('barcode');
   }
 
   // Ejecuta la búsqueda enviando SKU en el body
-  async function handleSkuScanSubmit() {
-    const sku = query.trim();
+  async function handleSkuScanSubmit(scannedSku?: string) {
+    const sku = (scannedSku ?? query).trim();
     if (!sku) return;
+    await clearDetection();
     setLoadingSearch(true);
     setSuggestions([]);
     setError('');
@@ -153,6 +233,17 @@ export default function StockScreen() {
     }
   }
 
+  // Al leer un código de barras: lo cargamos como SKU y disparamos la búsqueda.
+  useEffect(() => {
+    onBarcodeRef.current = (value: string) => {
+      setQuery(value);
+      setSearchMode('barcode');
+      setTimeout(() => {
+        handleSkuScanSubmit(value).catch(() => undefined);
+      }, 0);
+    };
+  });
+
   async function handleSelect(result: SearchResult) {
     const rawSku = (result as any).sku || (result as any).SKU;
     const sku = rawSku?.trim() || extractSku(result.model) || result.model?.trim();
@@ -161,6 +252,7 @@ export default function StockScreen() {
       return;
     }
     setSuggestions([]);
+    await clearDetection();
     await loadSku(sku);
   }
 
@@ -175,20 +267,45 @@ export default function StockScreen() {
         modelsizfid: row.modelsizfid,
       }, mode).epc;
 
-      await ChafonH103.setSoundEnabled(false);
-      await ChafonH103.startDetection(epc, 0, 100);
-      setDetection({ mode, epc, running: true });
+      // La terminal puede venir en modo Barcode (p. ej. si se usó el escáner 2D antes). El
+      // inventory RFID no hace nada en ese modo, así que la pasamos a RFID primero. El módulo
+      // nativo ya espera el segundo que exige el manual tras cambiar de modo.
+      if (chafon.readMode !== 'rfid') {
+        await ChafonH103.setReadMode('rfid');
+      }
+      // Nota: NO tocamos el buzzer acá. setSoundEnabled reescribe el bloque completo de
+      // parámetros (el SDK no permite cambiar un campo suelto) y este equipo lo rechaza con
+      // STATUS 0x01 (error de parámetro), dejando además al módulo en mal estado justo antes
+      // del inventory. El equipo ya pita solo en cada lectura según su propio BuzzerTime.
+      await ChafonH103.startDetection(epc);
+      setDetection({ mode, epc, running: true, reads: 0, matches: 0 });
       setError('');
     } catch (e: any) {
       setError(e?.message ?? 'No se pudo iniciar la detección RFID.');
     }
   }
 
+  useEffect(() => {
+    detectionRunningRef.current = !!detection?.running;
+  }, [detection?.running]);
+
+  // El firmware no acepta un inventory "infinito": cada comando abre una ventana de
+  // INVENTORY_WINDOW_SECONDS. Mientras la búsqueda siga abierta, la renovamos un poco antes
+  // de que expire para que se comporte como continua.
+  useEffect(() => {
+    if (!detection?.running || !detection.epc) return;
+    const epc = detection.epc;
+    const renewMs = (INVENTORY_WINDOW_SECONDS - 15) * 1000;
+    const timer = setInterval(() => {
+      ChafonH103.startDetection(epc).catch(() => undefined);
+    }, renewMs);
+    return () => clearInterval(timer);
+  }, [detection?.running, detection?.epc]);
+
   async function stopDetection() {
     try {
       await ChafonH103.stopInventory();
       await ChafonH103.clearDetectionMask();
-      await ChafonH103.setSoundEnabled(true);
     } finally {
       setDetection(null);
     }
@@ -204,13 +321,56 @@ export default function StockScreen() {
     }
   }
 
-  // Calibración de potencia RFID Chafon (+/-)
-  function adjustPower(amount: number) {
-    setRfidPower((prev) => {
-      const next = Math.max(0, Math.min(30, prev + amount));
-      ChafonH103.setPower(next).catch(() => undefined);
-      return next;
-    });
+  // Calibración de potencia RFID Chafon (+/-). Rango del H103 según el manual: [1, 33] dBm.
+  async function adjustPower(amount: number) {
+    const next = Math.max(POWER_MIN, Math.min(POWER_MAX, rfidPower + amount));
+    setPowerOverride(next);
+    try {
+      await ChafonH103.setPower(next);
+    } catch (e: any) {
+      setPowerOverride(null);
+      setError(e?.message ?? 'No se pudo cambiar la potencia de la antena.');
+    }
+  }
+
+  // Modo de lectura del equipo, compartido con Configuración.
+  async function changeReadMode(mode: 'rfid' | 'barcode') {
+    try {
+      await ChafonH103.setReadMode(mode);
+      if (mode === 'barcode') {
+        setSearchMode('barcode');
+        setTimeout(() => inputRef.current?.focus(), 100);
+      } else {
+        setSearchMode('text');
+      }
+      setError('');
+    } catch (e: any) {
+      setError(e?.message ?? 'No se pudo cambiar el modo de lectura.');
+    }
+  }
+
+  // Pasa la terminal a modo transparente. En modo HID el equipo actúa como teclado Bluetooth:
+  // al apretar el gatillo tipea el dato en el campo enfocado y mueve el foco por la pantalla,
+  // y los tags no llegan por el canal BLE que usa la detección RFID.
+  async function fixTransparentMode() {
+    try {
+      await ChafonH103.setTransparentMode(true);
+      setError('');
+    } catch (e: any) {
+      setError(e?.message ?? 'No se pudo cambiar el modo de salida de la terminal.');
+    }
+  }
+
+  async function refreshBattery() {
+    setBatteryLoading(true);
+    try {
+      const level = await ChafonH103.getBattery();
+      if (level < 0) setError('La terminal no respondió el nivel de batería.');
+    } catch (e: any) {
+      setError(e?.message ?? 'No se pudo consultar la batería.');
+    } finally {
+      setBatteryLoading(false);
+    }
   }
 
   return (
@@ -270,25 +430,78 @@ export default function StockScreen() {
         )}
       </View>
 
-      {/* Ajustar potencia RFID y opción Con Stock */}
-      <View style={styles.configRowContainer}>
-        <View style={[styles.calibrationCard, { flex: 1, marginBottom: 0 }]}>
-          <View style={styles.calibrationHeader}>
-            <Ionicons name="flash-outline" size={18} color="#0b63ce" />
-            <Text style={styles.calibrationTitle}>Ajustar potencia RFID</Text>
+      {/* Estado y control de la terminal: potencia, modo de lectura y batería. El estado se
+          comparte con el tab de Configuración, así que refleja lo que ya estaba establecido. */}
+      <View style={styles.terminalCard}>
+        <View style={styles.terminalHeader}>
+          <View style={[styles.terminalDot, chafon.connected ? styles.dotGreen : styles.dotRed]} />
+          <Text style={styles.terminalTitle}>
+            Terminal {chafon.connected ? 'conectada' : 'desconectada'}
+          </Text>
+          <Pressable
+            style={styles.batteryChip}
+            onPress={refreshBattery}
+            disabled={!chafon.connected || batteryLoading}
+          >
+            {batteryLoading ? (
+              <ActivityIndicator size="small" color="#0b63ce" />
+            ) : (
+              <Ionicons name="battery-half-outline" size={15} color={chafon.connected ? '#0b63ce' : '#98a2b3'} />
+            )}
+            <Text style={[styles.batteryChipText, !chafon.connected && { color: '#98a2b3' }]}>
+              {chafon.battery != null ? `${chafon.battery}%` : '--'}
+            </Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.terminalControls}>
+          <View style={styles.powerGroup}>
+            <Text style={styles.groupLabel}>Potencia</Text>
+            <View style={styles.calibrationControls}>
+              <Pressable style={styles.calibButton} onPress={() => adjustPower(-1)} disabled={!chafon.connected}>
+                <Text style={styles.calibButtonText}>-</Text>
+              </Pressable>
+              <Text style={styles.calibValue}>{rfidPower} dBm</Text>
+              <Pressable style={styles.calibButton} onPress={() => adjustPower(1)} disabled={!chafon.connected}>
+                <Text style={styles.calibButtonText}>+</Text>
+              </Pressable>
+            </View>
           </View>
-          <View style={styles.calibrationControls}>
-            <Pressable style={styles.calibButton} onPress={() => adjustPower(-1)}>
-              <Text style={styles.calibButtonText}>-</Text>
-            </Pressable>
-            <Text style={styles.calibValue}>{rfidPower} dBm</Text>
-            <Pressable style={styles.calibButton} onPress={() => adjustPower(1)}>
-              <Text style={styles.calibButtonText}>+</Text>
-            </Pressable>
+
+          <View style={styles.modeGroup}>
+            <Text style={styles.groupLabel}>Modo</Text>
+            <View style={styles.modeToggleRow}>
+              <Pressable
+                style={[styles.modeToggle, chafon.readMode === 'rfid' && styles.modeToggleActive]}
+                onPress={() => changeReadMode('rfid')}
+                disabled={!chafon.connected}
+              >
+                <Ionicons name="radio-outline" size={15} color={chafon.readMode === 'rfid' ? '#fff' : '#0b63ce'} />
+                <Text style={[styles.modeToggleText, chafon.readMode === 'rfid' && styles.modeToggleTextActive]}>RFID</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modeToggle, chafon.readMode === 'barcode' && styles.modeToggleActive]}
+                onPress={() => changeReadMode('barcode')}
+                disabled={!chafon.connected}
+              >
+                <Ionicons name="barcode-outline" size={15} color={chafon.readMode === 'barcode' ? '#fff' : '#0b63ce'} />
+                <Text style={[styles.modeToggleText, chafon.readMode === 'barcode' && styles.modeToggleTextActive]}>Barcode</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
 
-        <View style={[styles.conStockCard]}>
+        {chafon.connected && chafon.transparentMode === false && (
+          <Pressable style={styles.hidWarning} onPress={fixTransparentMode}>
+            <Ionicons name="warning-outline" size={16} color="#b54708" />
+            <Text style={styles.hidWarningText}>
+              La terminal está en modo teclado (HID): escribe sola en los campos y roba el foco.
+              Tocá acá para pasarla a modo transparente.
+            </Text>
+          </Pressable>
+        )}
+
+        <View style={styles.conStockRow}>
           <Text style={styles.conStockTitle}>Sólo con stock</Text>
           <Switch
             value={conStockFilter}
@@ -308,7 +521,7 @@ export default function StockScreen() {
           </Text>
         </Text>
         {searchMode === 'barcode' && (
-          <Pressable style={styles.resetModeButton} onPress={() => { setSearchMode('text'); setQuery(''); }}>
+          <Pressable style={styles.resetModeButton} onPress={() => { setSearchMode('text'); setQuery(''); ChafonH103.setReadMode('rfid').catch(() => undefined); }}>
             <Text style={styles.resetModeButtonText}>Volver a Descripción</Text>
           </Pressable>
         )}
@@ -326,7 +539,7 @@ export default function StockScreen() {
           autoCorrect={false}
           autoCapitalize="none"
           returnKeyType="search"
-          onSubmitEditing={searchMode === 'barcode' ? handleSkuScanSubmit : undefined}
+          onSubmitEditing={searchMode === 'barcode' ? () => handleSkuScanSubmit() : undefined}
         />
         <Pressable accessibilityLabel="Leer barcode" style={styles.scanButton} onPress={handleBarcodeSearch}>
           <Ionicons name="barcode-outline" size={23} color="#0b63ce" />
@@ -368,22 +581,6 @@ export default function StockScreen() {
       {loadingStock && <ActivityIndicator style={{ marginVertical: 14 }} />}
       {selectedSku !== '' && !loadingStock && <Text style={styles.resultTitle}>SKU {selectedSku}</Text>}
 
-      {detection?.running && (
-        <View style={styles.detectionBanner}>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.detectionTitle}>Detección RFID activa</Text>
-            <Text style={styles.detectionEpc}>{detection.epc}</Text>
-            {detection.lastTag && (
-              <Text style={styles.detectionTag}>
-                Detectado: {detection.lastTag.epc} · RSSI {detection.lastTag.rssi}
-              </Text>
-            )}
-          </View>
-          <Pressable onPress={stopDetection} style={styles.stopButton}>
-            <Ionicons name="stop-circle-outline" size={28} color="#b42318" />
-          </Pressable>
-        </View>
-      )}
 
       {!loadingStock && stock.length > 0 ? (
         <GroupedStockCard
@@ -395,9 +592,92 @@ export default function StockScreen() {
       ) : !loadingStock && selectedSku ? (
         <Text style={styles.empty}>Sin stock para el SKU consultado en el depósito activo.</Text>
       ) : null}
+
+      {/* Guía de detección: va debajo del detalle del producto, y se limpia sola
+          cuando se busca otro ítem por descripción o SKU (ver clearDetection). */}
+      {detection?.running && (
+        <View style={styles.detectionBanner}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.detectionTitle}>
+              Buscando por {detection.mode === 'model' ? 'Modelo' : detection.mode === 'color' ? 'Color' : 'Talle'}
+            </Text>
+            <Text style={styles.detectionEpc}>Prefijo EPC: {detection.epc}</Text>
+
+            <Text style={styles.detectionReads}>
+              Lecturas: {detection.reads} · Coincidencias: {detection.matches}
+            </Text>
+
+            {detection.lastTag ? (
+              <>
+                <Text style={styles.detectionTag}>
+                  Detectado: {detection.lastTag.epc} · RSSI {detection.lastTag.rssi} dBm
+                </Text>
+                {/* Barra de proximidad: cuanto mejor la señal, más cerca está el tag. */}
+                <View style={styles.proximityTrack}>
+                  <View
+                    style={[
+                      styles.proximityFill,
+                      { width: `${Math.round(proximityPct(detection.lastTag.rssi) * 100)}%` },
+                      proximityPct(detection.lastTag.rssi) > 0.66
+                        ? styles.proximityNear
+                        : proximityPct(detection.lastTag.rssi) > 0.33
+                        ? styles.proximityMid
+                        : styles.proximityFar,
+                    ]}
+                  />
+                </View>
+                <Text style={styles.proximityHint}>
+                  {proximityPct(detection.lastTag.rssi) > 0.66
+                    ? 'Muy cerca'
+                    : proximityPct(detection.lastTag.rssi) > 0.33
+                    ? 'Cerca'
+                    : 'Señal débil, seguí buscando'}
+                </Text>
+              </>
+            ) : detection.reads > 0 ? (
+              <>
+                <Text style={styles.detectionWarn}>
+                  Se están leyendo tags, pero ninguno coincide con este prefijo.
+                </Text>
+                {(() => {
+                  const b = detection.lastAnyEpc ? breakdownEpc(detection.lastAnyEpc) : null;
+                  if (!b) return null;
+                  return (
+                    <View style={styles.breakdownBox}>
+                      <Text style={styles.breakdownTitle}>Último tag leído: {detection.lastAnyEpc}</Text>
+                      <Text style={styles.breakdownRow}>Marca: {b.brand}</Text>
+                      <Text style={styles.breakdownRow}>
+                        Modelo: {b.model} (API debería mandar {b.modelDec})
+                      </Text>
+                      <Text style={styles.breakdownRow}>
+                        Color: {b.color} (API debería mandar {b.colorDec})
+                      </Text>
+                      <Text style={styles.breakdownRow}>
+                        Talle: {b.size} (API debería mandar {b.sizeDec})
+                      </Text>
+                      <Text style={styles.breakdownRow}>Serie/relleno: {b.tail} (se descarta)</Text>
+                    </View>
+                  );
+                })()}
+              </>
+            ) : (
+              <Text style={styles.detectionEpc}>Barré la zona con la terminal…</Text>
+            )}
+          </View>
+          <Pressable onPress={stopDetection} style={styles.stopButton}>
+            <Ionicons name="stop-circle-outline" size={28} color="#b42318" />
+          </Pressable>
+        </View>
+      )}
       </ScrollView>
     </Screen>
   );
+}
+
+/** Convierte el RSSI (aprox. -80 lejos .. -30 encima) en un valor 0..1 de cercanía. */
+function proximityPct(rssi: number): number {
+  if (typeof rssi !== 'number') return 0;
+  return Math.max(0, Math.min(1, (rssi + 80) / 50));
 }
 
 function extractSku(model?: string): string | null {
@@ -446,6 +726,16 @@ function GroupedStockCard({
   const { session } = useSession();
   const brandPrefix = session?.brandPrefix || getSession()?.brandPrefix || '';
 
+  // "Roll" de detalle HEX: cada campo convertido a HEX y left-padded según la especificación
+  // real de 96 bits (ver services/epc.ts). Se recalcula solo con activeRow, así que siempre
+  // queda al día apenas cambia el color/talle seleccionado.
+  // brandPrefix ya viene en HEX del backend: no se convierte, solo se normaliza.
+  const brandHex = hexPassthrough(brandPrefix, 6);
+  const modelHex = activeRow?.modelrfid ? stringToHex(activeRow.modelrfid, 6) : '';
+  const colorHex = activeRow?.modelcolrfid ? stringToHex(activeRow.modelcolrfid, 3) : '';
+  const sizeHex = activeRow?.modelsizfid ? stringToHex(activeRow.modelsizfid, 3) : '';
+
+  // Prefijos de búsqueda "radar" (usados por los botones Modelo/Color/Talle vía startDetection)
   let modelEpcHex = '';
   let colorEpcHex = '';
   let sizeEpcHex = '';
@@ -468,7 +758,7 @@ function GroupedStockCard({
           modelsizfid: activeRow.modelsizfid,
         }, 'color').epc;
       }
-      if (activeRow.modelrfid && activeRow.modelsizfid) {
+      if (activeRow.modelrfid && activeRow.modelcolrfid && activeRow.modelsizfid) {
         sizeEpcHex = buildEpc({
           brandPrefix,
           modelrfid: activeRow.modelrfid,
@@ -477,16 +767,8 @@ function GroupedStockCard({
         }, 'size').epc;
       }
     } catch {
-      // Fallback formatting if buildEpc throws
-      if (activeRow.modelrfid) {
-        modelEpcHex = stringToHex(brandPrefix + activeRow.modelrfid, 6);
-      }
-      if (activeRow.modelcolrfid) {
-        colorEpcHex = stringToHex(activeRow.modelcolrfid, 3);
-      }
-      if (activeRow.modelsizfid) {
-        sizeEpcHex = stringToHex(activeRow.modelsizfid, 3);
-      }
+      // No debería pasar (ya chequeamos los campos arriba), pero por las dudas dejamos
+      // los prefijos vacíos en vez de romper el render.
     }
   }
 
@@ -640,7 +922,7 @@ function GroupedStockCard({
             <DetectButton
               icon="options-outline"
               label="Talle"
-              disabled={!activeRow.modelsizfid}
+              disabled={!activeRow.modelcolrfid || !activeRow.modelsizfid}
               onPress={() => onDetect(activeRow, 'size')}
             />
           </View>
@@ -658,23 +940,26 @@ function GroupedStockCard({
           {showRfidDetails && (
             <View style={styles.accordionBody}>
               <Text style={styles.rfidCodeText}>
-                modelrfid: <Text style={styles.codeVal}>{activeRow.modelrfid || '-'}</Text>
+                Marca: <Text style={styles.codeValHex}>{brandHex || '-'}</Text>
               </Text>
               <Text style={styles.rfidCodeText}>
-                modelcolrfid: <Text style={styles.codeVal}>{activeRow.modelcolrfid || '-'}</Text>
+                Modelo: <Text style={styles.codeValHex}>{modelHex || '-'}</Text>
               </Text>
               <Text style={styles.rfidCodeText}>
-                modelsizfid: <Text style={styles.codeVal}>{activeRow.modelsizfid || '-'}</Text>
+                Color: <Text style={styles.codeValHex}>{colorHex || '-'}</Text>
+              </Text>
+              <Text style={styles.rfidCodeText}>
+                Talle: <Text style={styles.codeValHex}>{sizeHex || '-'}</Text>
               </Text>
               <View style={{ height: 1, backgroundColor: '#eaecf0', marginVertical: 6 }} />
               <Text style={styles.rfidCodeText}>
-                HEX Modelo: <Text style={styles.codeValHex}>{modelEpcHex || '-'}</Text>
+                Prefijo radar Modelo: <Text style={styles.codeValHex}>{modelEpcHex || '-'}</Text>
               </Text>
               <Text style={styles.rfidCodeText}>
-                HEX Color: <Text style={styles.codeValHex}>{colorEpcHex || '-'}</Text>
+                Prefijo radar Color: <Text style={styles.codeValHex}>{colorEpcHex || '-'}</Text>
               </Text>
               <Text style={styles.rfidCodeText}>
-                HEX Talle: <Text style={styles.codeValHex}>{sizeEpcHex || '-'}</Text>
+                Prefijo radar Talle: <Text style={styles.codeValHex}>{sizeEpcHex || '-'}</Text>
               </Text>
             </View>
           )}
@@ -752,6 +1037,17 @@ const styles = StyleSheet.create({
   detectionEpc: { color: '#667085', fontSize: 10, marginTop: 3 },
   detectionTag: { color: '#027a48', fontSize: 11, marginTop: 5, fontWeight: '600' },
   stopButton: { padding: 8 },
+  breakdownBox: { marginTop: 8, backgroundColor: '#fff', borderRadius: 8, borderWidth: 1, borderColor: '#fedf89', padding: 8 },
+  breakdownTitle: { fontSize: 11, fontWeight: '700', color: '#7a2e0e', marginBottom: 4, fontFamily: 'monospace' },
+  breakdownRow: { fontSize: 11, color: '#475467', fontFamily: 'monospace' },
+  detectionReads: { fontSize: 11, color: '#667085', marginTop: 4 },
+  detectionWarn: { fontSize: 11, color: '#b54708', marginTop: 6, fontWeight: '600' },
+  proximityTrack: { height: 8, borderRadius: 4, backgroundColor: '#f2f4f7', marginTop: 8, overflow: 'hidden' },
+  proximityFill: { height: '100%', borderRadius: 4 },
+  proximityNear: { backgroundColor: '#12b76a' },
+  proximityMid: { backgroundColor: '#f79009' },
+  proximityFar: { backgroundColor: '#f04438' },
+  proximityHint: { fontSize: 11, color: '#7a2e0e', marginTop: 4, fontWeight: '600' },
 
   // Custom deposit selector styles
   depositContainer: { backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#eaecf0', marginBottom: 12 },
@@ -765,15 +1061,28 @@ const styles = StyleSheet.create({
   dropdownItemTextActive: { fontWeight: '700', color: '#0b63ce' },
 
   // Config Row styles (Power calibration & Con Stock filter)
-  configRowContainer: { flexDirection: 'row', gap: 10, marginBottom: 12 },
-  calibrationCard: { backgroundColor: '#fff', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: '#eaecf0' },
-  calibrationHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 },
-  calibrationTitle: { fontSize: 12, fontWeight: '700', color: '#344054' },
+  terminalCard: { backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#eaecf0', marginBottom: 12, gap: 10 },
+  terminalHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  terminalDot: { width: 9, height: 9, borderRadius: 5 },
+  terminalTitle: { flex: 1, fontSize: 13, fontWeight: '700', color: '#344054' },
+  batteryChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: '#eff8ff', borderWidth: 1, borderColor: '#b2ddff' },
+  batteryChipText: { fontSize: 12, fontWeight: '700', color: '#0b63ce' },
+  terminalControls: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
+  powerGroup: { flex: 1 },
+  modeGroup: { flex: 1 },
+  groupLabel: { fontSize: 11, fontWeight: '600', color: '#667085', marginBottom: 5 },
+  modeToggleRow: { flexDirection: 'row', gap: 6 },
+  modeToggle: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingVertical: 8, borderRadius: 8, borderWidth: 1, borderColor: '#d0d5dd', backgroundColor: '#f9fafb' },
+  modeToggleActive: { backgroundColor: '#0b63ce', borderColor: '#0b63ce' },
+  modeToggleText: { fontSize: 11, fontWeight: '700', color: '#0b63ce' },
+  modeToggleTextActive: { color: '#fff' },
+  hidWarning: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#fffaeb', borderWidth: 1, borderColor: '#fedf89', borderRadius: 8, padding: 8 },
+  hidWarningText: { flex: 1, fontSize: 11, color: '#b54708', fontWeight: '600' },
+  conStockRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: '#f2f4f7', paddingTop: 8 },
   calibrationControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 12, paddingVertical: 2 },
   calibButton: { width: 34, height: 34, borderRadius: 17, borderWidth: 1, borderColor: '#d0d5dd', backgroundColor: '#f9fafb', justifyContent: 'center', alignItems: 'center' },
   calibButtonText: { fontSize: 16, fontWeight: '600', color: '#101828' },
   calibValue: { fontSize: 13, fontWeight: '700', color: '#0b63ce', minWidth: 50, textAlign: 'center' },
-  conStockCard: { width: 110, backgroundColor: '#fff', borderRadius: 12, padding: 10, borderWidth: 1, borderColor: '#eaecf0', alignItems: 'center', justifyContent: 'center', gap: 4 },
   conStockTitle: { fontSize: 11, fontWeight: '700', color: '#344054', textAlign: 'center' },
 
   // Solid & Dashed stock styles

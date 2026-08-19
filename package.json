@@ -13,6 +13,7 @@
   "dependencies": {
     "@expo/vector-icons": "^15.0.0",
     "axios": "^1.11.0",
+    "chafon-h103-local": "file:./modules/chafon-h103",
     "expo": "~57.0.0",
     "expo-build-properties": "~57.0.10",
     "expo-linking": "~57.0.5",
