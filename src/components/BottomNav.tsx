@@ -10,6 +10,7 @@ const icons: Record<string, keyof typeof Ionicons.glyphMap> = {
   stock: 'barcode-outline',
   inventario: 'book-outline',
   pedidos: 'cart-outline',
+  presupuestos: 'document-text-outline',
   configuracion: 'settings-outline',
   salir: 'log-out-outline',
 };
@@ -51,6 +52,7 @@ export function AppTabs() {
       <Tabs.Screen name="stock" options={{ title: 'Stock' }} />
       <Tabs.Screen name="inventario" options={{ title: 'Inventario' }} />
       <Tabs.Screen name="pedidos" options={{ title: 'Pedidos' }} />
+      <Tabs.Screen name="presupuestos" options={{ title: 'Presup.' }} />
       <Tabs.Screen name="configuracion" options={{ title: 'Config.' }} />
       <Tabs.Screen
         name="salir"
