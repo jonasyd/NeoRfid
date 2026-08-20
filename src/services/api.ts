@@ -7,14 +7,16 @@ import type {
   DepositosResponse,
   SearchResponse,
   SearchResult,
-  StockRow,
-} from '@/types/api';
+  StockRow, AjustePayload, Inventario} from '@/types/api';
 
 const API_BASE_URL = process.env.EXPO_PUBLIC_API_BASE_URL || 'http://192.168.68.68:8000/';
 const AUTH_PATH = process.env.EXPO_PUBLIC_AUTH_PATH ?? '/v1/mobile/auth';
 const DEPOSITS_PATH = process.env.EXPO_PUBLIC_DEPOSITS_PATH ?? '/v1/mobile/deposites';
 const SEARCH_PATH = process.env.EXPO_PUBLIC_SEARCH_PATH ?? '/v1/mobile/search';
 const STOCK_PATH = process.env.EXPO_PUBLIC_STOCK_PATH ?? '/v1/mobile/stock';
+// Los ajustes de stock van a un endpoint distinto según cómo se cargaron los ítems.
+const AJUSTE_BARCODE_PATH = process.env.EXPO_PUBLIC_AJUSTE_BARCODE_PATH ?? '/v1/mobile/stockajust';
+const AJUSTE_RFID_PATH = process.env.EXPO_PUBLIC_AJUSTE_RFID_PATH ?? '/v1/mobile/stockajustrfid';
 const TOKEN_REFRESH_SECONDS = Number(process.env.EXPO_PUBLIC_TOKEN_REFRESH_SECONDS ?? '900');
 const REFRESH_SKEW_SECONDS = Number(process.env.EXPO_PUBLIC_TOKEN_REFRESH_SKEW_SECONDS ?? '30');
 
@@ -329,4 +331,24 @@ export async function logout(): Promise<void> {
     SecureStore.deleteItemAsync(SESSION_KEY),
     SecureStore.deleteItemAsync(CREDENTIALS_KEY),
   ]);
+}
+
+
+/**
+ * Envía un inventario como ajuste de stock.
+ *
+ * Las cantidades viajan como texto, igual que en el ejemplo del endpoint. La cabecera se manda tal
+ * cual está guardada, salvo el motivo, que se limpia de espacios por las dudas de que haya quedado
+ * alguno al editarlo.
+ */
+export async function enviarInventario(inv: Inventario): Promise<void> {
+  const path = inv.modo === 'rfid' ? AJUSTE_RFID_PATH : AJUSTE_BARCODE_PATH;
+  const payload: AjustePayload = {
+    ajuste: {
+      ...inv.cabecera,
+      motivoCode: inv.cabecera.motivoCode.replace(/\s+/g, ''),
+      sku: inv.lineas.map((l) => ({ barcode: l.barcode, cantidad: String(l.cantidad) })),
+    },
+  };
+  await api.post(path, payload);
 }
