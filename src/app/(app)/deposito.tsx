@@ -6,8 +6,10 @@ import { useSession } from '@/context/SessionContext';
 
 export default function DepositoScreen() {
   const { session, setDeposito } = useSession();
+  // Esta pantalla no vive dentro de las pestañas, así que no hay barra abajo que reserve la
+  // franja de los botones del sistema: la pide ella.
   return (
-    <Screen>
+    <Screen edges={['top', 'left', 'right', 'bottom']}>
       <Text style={styles.title}>Seleccioná el depósito</Text>
       <Text style={styles.subtitle}>Las consultas de stock utilizarán el depósito seleccionado.</Text>
       <FlatList
