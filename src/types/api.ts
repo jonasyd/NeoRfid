@@ -84,9 +84,23 @@ export interface InventarioCabecera {
 }
 
 export interface InventarioLinea {
-  /** Código leído. En modo RFID acá va el EPC. */
-  barcode: string;
+  /** Código leído: el código de barras, o el EPC si el inventario es por RFID. */
+  codigo: string;
   cantidad: number;
+}
+
+/**
+ * Máscara de búsqueda de un inventario por RFID.
+ *
+ * Se arma con el brandPrefix de la sesión más el modelo, que es obligatorio, y opcionalmente el
+ * color y el talle. Cuanto más se completa, más angosta es la búsqueda.
+ */
+export interface MascaraEpc {
+  modelrfid: string;
+  modelcolrfid?: string;
+  modelsizfid?: string;
+  /** Prefijo HEX ya armado, que es lo que se compara contra los EPC leídos. */
+  prefijo: string;
 }
 
 /**
@@ -104,14 +118,23 @@ export interface Inventario {
   cabecera: InventarioCabecera;
   lineas: InventarioLinea[];
   estado: InventarioEstado;
+  /** Sólo en los inventarios por RFID. */
+  mascara?: MascaraEpc;
   creadoEn: number;
   actualizadoEn: number;
   ultimoError?: string;
 }
 
-/** Cuerpo que espera el endpoint de ajustes de stock. */
+/**
+ * Cuerpo que espera el endpoint de ajustes de stock.
+ *
+ * El arreglo se llama `sku` en los dos modos; lo que cambia es la clave de cada elemento:
+ * `barcode` cuando se cargó con el escáner y `epc` cuando se cargó por RFID.
+ */
+export type AjusteItem = { barcode: string; cantidad: string } | { epc: string; cantidad: string };
+
 export interface AjustePayload {
   ajuste: InventarioCabecera & {
-    sku: { barcode: string; cantidad: string }[];
+    sku: AjusteItem[];
   };
 }

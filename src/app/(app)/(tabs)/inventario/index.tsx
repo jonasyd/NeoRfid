@@ -23,8 +23,10 @@ import {
   cambiarCantidad,
   crearInventario,
   eliminarInventario,
+  construirMascara,
   eliminarLinea,
   faltantesCabecera,
+  faltantesMascara,
   guardarInventario,
   limpiarMotivo,
   listarInventarios,
@@ -34,6 +36,7 @@ import ChafonH103, { getChafonStatus, hexToAscii, type ChafonTag } from '@module
 import type {
   Deposito,
   Inventario,
+  MascaraEpc,
   InventarioModo,
   TipoItem,
   TipoMovimiento,
@@ -68,6 +71,8 @@ export default function InventarioScreen() {
 
   const [codigoManual, setCodigoManual] = useState('');
   const [mostrarDepositos, setMostrarDepositos] = useState(false);
+  // Barrido RFID en curso. Se refleja en el botón y decide si aceptamos lecturas.
+  const [barriendo, setBarriendo] = useState(false);
   const entradaRef = useRef<TextInput>(null);
 
   // Las pestañas mantienen las pantallas montadas, así que Stock e Inventario están suscritos a
@@ -85,6 +90,10 @@ export default function InventarioScreen() {
 
   // El listener de la terminal necesita ver el inventario vigente sin recrearse en cada lectura.
   const actualRef = useRef<Inventario | null>(null);
+  const barriendoRef = useRef(false);
+  useEffect(() => {
+    barriendoRef.current = barriendo;
+  }, [barriendo]);
   useEffect(() => {
     actualRef.current = actual;
   }, [actual]);
@@ -106,10 +115,10 @@ export default function InventarioScreen() {
 
   /* ----------------------------- lecturas ----------------------------- */
 
-  const sumarCodigo = useCallback((codigo: string) => {
+  const sumarCodigo = useCallback((codigo: string, unico = false) => {
     const inv = actualRef.current;
     if (!inv) return;
-    setActual({ ...inv, lineas: agregarLectura(inv.lineas, codigo) });
+    setActual({ ...inv, lineas: agregarLectura(inv.lineas, codigo, { unico }) });
   }, []);
 
   useEffect(() => {
@@ -117,7 +126,18 @@ export default function InventarioScreen() {
       // Sólo capturamos mientras se está confeccionando y con la terminal en modo código de
       // barras: en RFID esta misma señal trae EPCs, que todavía no se cargan acá.
       if (!enPantallaRef.current) return;
-      if (!actualRef.current || actualRef.current.modo !== 'barcode') return;
+      const inv = actualRef.current;
+      if (!inv) return;
+
+      if (inv.modo === 'rfid') {
+        // Cada EPC es una unidad física concreta: se registra una sola vez por más que el lector
+        // lo vea decenas de veces mientras barre.
+        if (!barriendoRef.current) return;
+        if (tag.isMatch === false) return;
+        sumarCodigo(tag.epc, true);
+        return;
+      }
+
       if (getChafonStatus().readMode !== 'barcode') return;
       const valor = hexToAscii(tag.epc);
       if (valor) sumarCodigo(valor);
@@ -138,15 +158,6 @@ export default function InventarioScreen() {
       await ChafonH103.setReadMode(modo);
     } catch (e: any) {
       setError(e?.message ?? 'No se pudo cambiar el modo de la terminal.');
-    }
-
-    if (modo === 'rfid') {
-      Alert.alert(
-        'Inventario por RFID',
-        'La terminal quedó en modo RFID. La pantalla de confección por RFID todavía no está ' +
-          'implementada: por ahora se usa el inventario por código de barras.'
-      );
-      return;
     }
 
     if (!depositoCode) {
@@ -188,13 +199,37 @@ export default function InventarioScreen() {
     return dep.Sucursal ? `${dep.Sucursal} - ${dep.nombre}` : dep.nombre;
   }
 
+  /**
+   * Guarda los campos de la máscara y recalcula el prefijo.
+   *
+   * El prefijo se arma en cada cambio y no al confirmar, para que se vea al instante qué se va a
+   * buscar: es la única forma de darse cuenta de que un valor está mal antes de salir a barrer.
+   */
+  function editarMascara(campo: keyof MascaraEpc, valor: string) {
+    setActual((inv) => {
+      if (!inv) return inv;
+      const base: MascaraEpc = inv.mascara ?? { modelrfid: '', prefijo: '' };
+      const campos = { ...base, [campo]: valor.trim() };
+      let prefijo = '';
+      try {
+        prefijo = construirMascara(session?.brandPrefix ?? '', campos).prefijo;
+      } catch {
+        // Falta el modelo o hay un valor inválido: se deja el prefijo vacío y la validación avisa.
+      }
+      return { ...inv, mascara: { ...campos, prefijo } };
+    });
+  }
+
   function editarCabecera(campo: keyof Inventario['cabecera'], valor: string) {
     setActual((inv) => (inv ? { ...inv, cabecera: { ...inv.cabecera, [campo]: valor } } : inv));
   }
 
   async function irAGrilla() {
     if (!actual) return;
-    const faltan = faltantesCabecera(actual.cabecera);
+    const faltan = [
+      ...faltantesCabecera(actual.cabecera),
+      ...(actual.modo === 'rfid' ? faltantesMascara(actual.mascara) : []),
+    ];
     if (faltan.length > 0) {
       setError(
         faltan.length === 1
@@ -210,6 +245,29 @@ export default function InventarioScreen() {
     setTimeout(() => entradaRef.current?.focus(), 150);
   }
 
+  async function alternarBarrido() {
+    const inv = actualRef.current;
+    if (!inv?.mascara?.prefijo) {
+      setError('Definí la máscara antes de barrer.');
+      return;
+    }
+    try {
+      if (barriendo) {
+        await ChafonH103.stopInventory();
+        await ChafonH103.clearDetectionMask();
+        setBarriendo(false);
+      } else {
+        ChafonH103.resetDiagnostics();
+        await ChafonH103.startDetection(inv.mascara.prefijo);
+        setBarriendo(true);
+      }
+      setError('');
+    } catch (e: any) {
+      setBarriendo(false);
+      setError(e?.message ?? 'No se pudo cambiar el estado del barrido.');
+    }
+  }
+
   function agregarManual() {
     const codigo = codigoManual.trim();
     if (!codigo) return;
@@ -220,6 +278,13 @@ export default function InventarioScreen() {
 
   async function guardarYSalir(estado: Inventario['estado']) {
     if (!actual) return;
+    if (barriendo) {
+      try {
+        await ChafonH103.stopInventory();
+        await ChafonH103.clearDetectionMask();
+      } catch {}
+      setBarriendo(false);
+    }
     await guardarInventario({ ...actual, estado });
     await recargar();
     setActual(null);
@@ -380,7 +445,10 @@ export default function InventarioScreen() {
 
   if (paso === 'config') {
     // Se recalcula en cada render para que el botón refleje el estado del formulario al instante.
-    const faltantes = faltantesCabecera(actual.cabecera);
+    const faltantes = [
+      ...faltantesCabecera(actual.cabecera),
+      ...(actual.modo === 'rfid' ? faltantesMascara(actual.mascara) : []),
+    ];
     return (
       <Screen>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
@@ -472,6 +540,66 @@ export default function InventarioScreen() {
             />
           </Campo>
 
+          {actual.modo === 'rfid' && (
+            <View style={styles.mascaraCaja}>
+              <Text style={styles.mascaraTitulo}>Máscara de búsqueda EPC</Text>
+              <Text style={styles.ayudaChica}>
+                Arranca con la marca de la sesión. El modelo es obligatorio; el color y el talle
+                van angostando la búsqueda.
+              </Text>
+
+              <Campo etiqueta="Marca (de la sesión)">
+                <Text style={styles.soloLectura}>{session?.brandPrefix || '—'}</Text>
+              </Campo>
+
+              <Campo etiqueta="Modelo (modelrfid) *">
+                <TextInput
+                  style={styles.entrada}
+                  value={actual.mascara?.modelrfid ?? ''}
+                  onChangeText={(v) => editarMascara('modelrfid', v)}
+                  keyboardType="number-pad"
+                  placeholder="Obligatorio"
+                  placeholderTextColor="#98a2b3"
+                />
+              </Campo>
+
+              <View style={styles.mascaraFila}>
+                <View style={{ flex: 1 }}>
+                  <Campo etiqueta="Color (opcional)">
+                    <TextInput
+                      style={styles.entrada}
+                      value={actual.mascara?.modelcolrfid ?? ''}
+                      onChangeText={(v) => editarMascara('modelcolrfid', v)}
+                      keyboardType="number-pad"
+                    />
+                  </Campo>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Campo etiqueta="Talle (opcional)">
+                    <TextInput
+                      style={styles.entrada}
+                      value={actual.mascara?.modelsizfid ?? ''}
+                      onChangeText={(v) => editarMascara('modelsizfid', v)}
+                      keyboardType="number-pad"
+                    />
+                  </Campo>
+                </View>
+              </View>
+
+              {!!actual.mascara?.modelsizfid && !actual.mascara?.modelcolrfid && (
+                <Text style={styles.avisoMascara}>
+                  El talle sólo se puede usar junto con el color: por ahora se busca sólo por modelo.
+                </Text>
+              )}
+
+              <Campo etiqueta="Prefijo que se va a buscar">
+                <Text style={[styles.soloLectura, styles.prefijo]}>
+                  {actual.mascara?.prefijo || '—'}
+                </Text>
+              </Campo>
+            </View>
+          )}
+
           <View style={styles.filaSwitch}>
             <View style={{ flex: 1 }}>
               <Text style={styles.etiqueta}>Ajusta por diferencia</Text>
@@ -528,6 +656,26 @@ export default function InventarioScreen() {
           </Text>
         </View>
 
+        {actual.modo === 'rfid' ? (
+          <>
+            <View style={styles.mascaraResumen}>
+              <Ionicons name="radio-outline" size={16} color="#6941c6" />
+              <Text style={styles.mascaraResumenTexto} numberOfLines={1}>
+                Buscando {actual.mascara?.prefijo}
+              </Text>
+            </View>
+
+            <Pressable
+              style={[styles.botonPrimario, barriendo && styles.botonDetener]}
+              onPress={alternarBarrido}
+            >
+              <Ionicons name={barriendo ? 'stop-circle-outline' : 'play'} size={18} color="#fff" />
+              <Text style={styles.botonPrimarioTexto}>
+                {barriendo ? 'Detener barrido' : 'Iniciar barrido'}
+              </Text>
+            </Pressable>
+          </>
+        ) : (
         <View style={styles.entradaFila}>
           <Ionicons name="barcode-outline" size={20} color="#667085" />
           <TextInput
@@ -545,30 +693,38 @@ export default function InventarioScreen() {
             <Ionicons name="add" size={20} color="#fff" />
           </Pressable>
         </View>
+        )}
 
         {!!error && <Text style={styles.error}>{error}</Text>}
 
         <View style={styles.grillaCabecera}>
-          <Text style={[styles.grillaTitulo, { flex: 1 }]}>Código de barras</Text>
-          <Text style={[styles.grillaTitulo, { width: 130, textAlign: 'center' }]}>Cantidad</Text>
+          <Text style={[styles.grillaTitulo, { flex: 1 }]}>
+            {actual.modo === 'rfid' ? 'EPC detectado' : 'Código de barras'}
+          </Text>
+          {actual.modo === 'barcode' && (
+            <Text style={[styles.grillaTitulo, { width: 130, textAlign: 'center' }]}>Cantidad</Text>
+          )}
           <View style={{ width: 28 }} />
         </View>
 
         {actual.lineas.length === 0 && (
-          <Text style={styles.vacioTexto}>Sin lecturas todavía.</Text>
+          <Text style={styles.vacioTexto}>
+            {actual.modo === 'rfid' ? 'Sin EPC detectados todavía.' : 'Sin lecturas todavía.'}
+          </Text>
         )}
 
         {actual.lineas.map((linea) => (
-          <View key={linea.barcode} style={styles.grillaFila}>
+          <View key={linea.codigo} style={styles.grillaFila}>
             <Text style={styles.codigo} numberOfLines={1}>
-              {linea.barcode}
+              {linea.codigo}
             </Text>
 
+            {actual.modo === 'barcode' && (
             <View style={styles.cantidadCaja}>
               <Pressable
                 style={styles.cantidadBoton}
                 onPress={() =>
-                  setActual({ ...actual, lineas: cambiarCantidad(actual.lineas, linea.barcode, linea.cantidad - 1) })
+                  setActual({ ...actual, lineas: cambiarCantidad(actual.lineas, linea.codigo, linea.cantidad - 1) })
                 }
               >
                 <Ionicons name="remove" size={16} color="#0b63ce" />
@@ -581,7 +737,7 @@ export default function InventarioScreen() {
                   const n = parseInt(v.replace(/[^0-9]/g, ''), 10);
                   setActual({
                     ...actual,
-                    lineas: cambiarCantidad(actual.lineas, linea.barcode, Number.isNaN(n) ? 0 : n),
+                    lineas: cambiarCantidad(actual.lineas, linea.codigo, Number.isNaN(n) ? 0 : n),
                   });
                 }}
                 keyboardType="number-pad"
@@ -591,15 +747,16 @@ export default function InventarioScreen() {
               <Pressable
                 style={styles.cantidadBoton}
                 onPress={() =>
-                  setActual({ ...actual, lineas: cambiarCantidad(actual.lineas, linea.barcode, linea.cantidad + 1) })
+                  setActual({ ...actual, lineas: cambiarCantidad(actual.lineas, linea.codigo, linea.cantidad + 1) })
                 }
               >
                 <Ionicons name="add" size={16} color="#0b63ce" />
               </Pressable>
             </View>
+            )}
 
             <Pressable
-              onPress={() => setActual({ ...actual, lineas: eliminarLinea(actual.lineas, linea.barcode) })}
+              onPress={() => setActual({ ...actual, lineas: eliminarLinea(actual.lineas, linea.codigo) })}
               hitSlop={8}
             >
               <Ionicons name="trash-outline" size={18} color="#b42318" />
@@ -810,6 +967,21 @@ const styles = StyleSheet.create({
   depositoItemActivo: { backgroundColor: '#eff8ff' },
   depositoItemTexto: { color: '#344054', fontWeight: '600' },
   depositoItemTextoActivo: { color: '#0b63ce' },
+
+  mascaraCaja: {
+    gap: 10, backgroundColor: '#faf9ff', borderWidth: 1, borderColor: '#e9d7fe',
+    borderRadius: 12, padding: 14,
+  },
+  mascaraTitulo: { fontWeight: '800', color: '#6941c6' },
+  mascaraFila: { flexDirection: 'row', gap: 10 },
+  prefijo: { fontWeight: '700', color: '#101828', letterSpacing: 1 },
+  avisoMascara: { fontSize: 11, color: '#b54708', fontWeight: '600' },
+  mascaraResumen: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#f4f3ff', borderRadius: 10, padding: 10,
+  },
+  mascaraResumenTexto: { flex: 1, fontSize: 12, color: '#6941c6', fontWeight: '700', letterSpacing: 0.5 },
+  botonDetener: { backgroundColor: '#b42318' },
 
   campo: { gap: 6 },
   etiqueta: { fontSize: 13, fontWeight: '700', color: '#344054' },

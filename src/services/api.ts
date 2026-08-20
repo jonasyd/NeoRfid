@@ -366,7 +366,12 @@ export async function enviarInventario(inv: Inventario): Promise<void> {
     ajuste: {
       ...inv.cabecera,
       motivoCode: inv.cabecera.motivoCode.replace(/\s+/g, ''),
-      sku: inv.lineas.map((l) => ({ barcode: l.barcode, cantidad: String(l.cantidad) })),
+      // El arreglo se llama `sku` en los dos modos; cambia la clave de cada elemento.
+      sku: inv.lineas.map((l) =>
+        inv.modo === 'rfid'
+          ? { epc: l.codigo, cantidad: String(l.cantidad) }
+          : { barcode: l.codigo, cantidad: String(l.cantidad) }
+      ),
     },
   };
   await api.post(path, payload);
