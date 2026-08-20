@@ -1,5 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useFocusEffect } from 'expo-router';
 import { ActivityIndicator, Animated, Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, Vibration, View } from 'react-native';
 import { Screen } from '@/components/Screen';
 import { getStock, searchModels, getSession } from '@/services/api';
@@ -55,6 +56,19 @@ export default function StockScreen() {
   const [error, setError] = useState('');
   const [detection, setDetection] = useState<DetectionState>(null);
   // Para llevar la vista hasta la guía de detección apenas arranca una búsqueda.
+  // Las pestañas mantienen las pantallas montadas, así que Stock e Inventario están suscritos a
+  // las lecturas al mismo tiempo: un código escaneado en una aparecía también en la otra. Cada
+  // pantalla atiende las lecturas sólo mientras está a la vista.
+  const enPantallaRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      enPantallaRef.current = true;
+      return () => {
+        enPantallaRef.current = false;
+      };
+    }, [])
+  );
+
   const scrollRef = useRef<ScrollView>(null);
   const detectionY = useRef(0);
 
@@ -95,6 +109,8 @@ export default function StockScreen() {
       // En modo transparente el código de barras llega por este mismo canal (antes entraba
       // "tipeado" porque el equipo estaba en modo teclado HID). Lo decodificamos y buscamos.
       if (getChafonStatus().readMode === 'barcode') {
+        // El código va al buscador sólo si esta pantalla es la que se está mirando.
+        if (!enPantallaRef.current) return;
         const value = hexToAscii(tag.epc);
         if (value) onBarcodeRef.current(value);
         return;

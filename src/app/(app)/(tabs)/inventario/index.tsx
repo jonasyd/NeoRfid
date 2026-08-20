@@ -12,6 +12,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { Screen } from '@/components/Screen';
 import { useSession } from '@/context/SessionContext';
 import { useChafonStatus } from '@/hooks/useChafonStatus';
@@ -69,6 +70,19 @@ export default function InventarioScreen() {
   const [mostrarDepositos, setMostrarDepositos] = useState(false);
   const entradaRef = useRef<TextInput>(null);
 
+  // Las pestañas mantienen las pantallas montadas, así que Stock e Inventario están suscritos a
+  // las lecturas al mismo tiempo: un código escaneado en una aparecía también en la otra. Cada
+  // pantalla atiende las lecturas sólo mientras está a la vista.
+  const enPantallaRef = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      enPantallaRef.current = true;
+      return () => {
+        enPantallaRef.current = false;
+      };
+    }, [])
+  );
+
   // El listener de la terminal necesita ver el inventario vigente sin recrearse en cada lectura.
   const actualRef = useRef<Inventario | null>(null);
   useEffect(() => {
@@ -102,6 +116,7 @@ export default function InventarioScreen() {
     const sub = ChafonH103.addTagListener((tag: ChafonTag) => {
       // Sólo capturamos mientras se está confeccionando y con la terminal en modo código de
       // barras: en RFID esta misma señal trae EPCs, que todavía no se cargan acá.
+      if (!enPantallaRef.current) return;
       if (!actualRef.current || actualRef.current.modo !== 'barcode') return;
       if (getChafonStatus().readMode !== 'barcode') return;
       const valor = hexToAscii(tag.epc);
