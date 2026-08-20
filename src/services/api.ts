@@ -259,12 +259,31 @@ api.interceptors.response.use(
   },
 );
 
+/**
+ * Deja el código del depósito siempre en `Codigo`, sea cual sea la clave que use el endpoint.
+ *
+ * Es el valor que viaja como `depositoCode` al aplicar un inventario, así que si no llega el
+ * ajuste se rechaza del otro lado. Se aceptan las variantes de mayúsculas y los nombres
+ * alternativos que suelen aparecer, en vez de atarse a una sola forma.
+ */
+function normalizarDeposito(d: Deposito & Record<string, unknown>): Deposito {
+  const posibles = [d.Codigo, d.codigo, d.code, d.Code, d.depositoCode, d.DepositoCode];
+  const codigo = posibles.find((v) => typeof v === 'string' && v.trim() !== '');
+  return { ...d, Codigo: typeof codigo === 'string' ? codigo.trim() : undefined };
+}
+
 export async function loadDepositos(): Promise<Deposito[]> {
   if (session?.username.toUpperCase() === 'NEOADMIN') {
     return session.depositos;
   }
   const response = await api.get<DepositosResponse>(DEPOSITS_PATH);
-  const data = Array.isArray(response.data?.deposites) ? response.data.deposites : [];
+  const crudo = Array.isArray(response.data?.deposites) ? response.data.deposites : [];
+  const data = crudo.map((d) => normalizarDeposito(d as Deposito & Record<string, unknown>));
+  if (data.length > 0 && !data.some((d) => d.Codigo)) {
+    console.warn(
+      'El endpoint de depósitos no devolvió ningún código; no se van a poder aplicar inventarios.'
+    );
+  }
   if (session) {
     session.depositos = data;
     if (!session.depositoSeleccionado && data.length > 0) {

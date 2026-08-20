@@ -156,8 +156,7 @@ export async function crearInventario(params: {
     fecha: fechaHora(ahora),
     depositoCode: params.depositoCode,
     motivoCode: '',
-    // El endpoint de ejemplo repite el idAjuste como nota; sirve de valor inicial razonable.
-    nota: idAjuste,
+    nota: '',
     ajustaPorDiferencia: params.ajustaPorDiferencia ?? 'N',
   };
   return {
@@ -196,6 +195,25 @@ export function eliminarLinea(lineas: InventarioLinea[], codigo: string): Invent
 
 export function totalUnidades(lineas: InventarioLinea[]): number {
   return lineas.reduce((acc, l) => acc + l.cantidad, 0);
+}
+
+/**
+ * Campos de la cabecera que tienen que estar completos para poder arrancar el inventario.
+ *
+ * La nota queda afuera a propósito: es texto libre y opcional. El resto sí se valida acá y no
+ * recién al enviar, porque descubrir que falta el motivo después de escanear doscientos códigos
+ * es tarde.
+ */
+export function faltantesCabecera(c: InventarioCabecera): string[] {
+  const faltan: string[] = [];
+  if (!c.idAjuste?.trim()) faltan.push('Número de inventario');
+  if (!c.fecha?.trim()) faltan.push('Fecha');
+  if (!c.depositoCode?.trim()) faltan.push('Depósito');
+  if (!c.tipoItem) faltan.push('Tipo de ítem');
+  if (!c.tipoMovimiento) faltan.push('Tipo de movimiento');
+  if (!c.motivoCode?.trim()) faltan.push('Código de motivo');
+  if (c.ajustaPorDiferencia !== 'S' && c.ajustaPorDiferencia !== 'N') faltan.push('Ajusta por diferencia');
+  return faltan;
 }
 
 /** El endpoint no acepta espacios en el motivo, así que se limpian al vuelo. */

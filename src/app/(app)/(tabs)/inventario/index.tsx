@@ -23,6 +23,7 @@ import {
   crearInventario,
   eliminarInventario,
   eliminarLinea,
+  faltantesCabecera,
   guardarInventario,
   limpiarMotivo,
   listarInventarios,
@@ -150,8 +151,13 @@ export default function InventarioScreen() {
 
   async function irAGrilla() {
     if (!actual) return;
-    if (!actual.cabecera.motivoCode) {
-      setError('Cargá el código de motivo antes de continuar.');
+    const faltan = faltantesCabecera(actual.cabecera);
+    if (faltan.length > 0) {
+      setError(
+        faltan.length === 1
+          ? `Falta completar: ${faltan[0]}.`
+          : `Faltan completar: ${faltan.join(', ')}.`
+      );
       return;
     }
     setError('');
@@ -321,6 +327,8 @@ export default function InventarioScreen() {
   if (!actual) return null;
 
   if (paso === 'config') {
+    // Se recalcula en cada render para que el botón refleje el estado del formulario al instante.
+    const faltantes = faltantesCabecera(actual.cabecera);
     return (
       <Screen>
         <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
@@ -423,8 +431,14 @@ export default function InventarioScreen() {
 
           {!!error && <Text style={styles.error}>{error}</Text>}
 
-          <Pressable style={styles.botonPrimario} onPress={irAGrilla}>
-            <Text style={styles.botonPrimarioTexto}>Continuar</Text>
+          <Pressable
+            style={[styles.botonPrimario, faltantes.length > 0 && styles.botonDeshabilitado]}
+            onPress={irAGrilla}
+            disabled={faltantes.length > 0}
+          >
+            <Text style={styles.botonPrimarioTexto}>
+              {faltantes.length > 0 ? `Falta: ${faltantes[0]}` : 'Continuar'}
+            </Text>
             <Ionicons name="arrow-forward" size={18} color="#fff" />
           </Pressable>
         </ScrollView>
