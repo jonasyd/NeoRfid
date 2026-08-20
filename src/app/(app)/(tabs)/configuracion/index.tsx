@@ -601,7 +601,7 @@ export default function ConfiguracionScreen() {
     <Screen>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <Text style={styles.title}>Configuración</Text>
-        <Text style={styles.buildTag}>Build #8153 (validacion de cabecera)</Text>
+        <Text style={styles.buildTag}>Build #8154 (selector de deposito en Inventario)</Text>
 
         {/* Sesión de Usuario */}
         <Text style={styles.section}>Sesión de Usuario</Text>

@@ -31,6 +31,7 @@ import {
 } from '@/services/inventarios';
 import ChafonH103, { getChafonStatus, hexToAscii, type ChafonTag } from '@modules/chafon-h103';
 import type {
+  Deposito,
   Inventario,
   InventarioModo,
   TipoItem,
@@ -51,7 +52,7 @@ const TIPOS_MOVIMIENTO: { valor: TipoMovimiento; etiqueta: string }[] = [
 ];
 
 export default function InventarioScreen() {
-  const { session } = useSession();
+  const { session, setDeposito } = useSession();
   const chafon = useChafonStatus();
 
   const [paso, setPaso] = useState<Paso>('lista');
@@ -65,6 +66,7 @@ export default function InventarioScreen() {
   const [enviando, setEnviando] = useState(false);
 
   const [codigoManual, setCodigoManual] = useState('');
+  const [mostrarDepositos, setMostrarDepositos] = useState(false);
   const entradaRef = useRef<TextInput>(null);
 
   // El listener de la terminal necesita ver el inventario vigente sin recrearse en cada lectura.
@@ -112,6 +114,7 @@ export default function InventarioScreen() {
 
   async function elegirModo(modo: InventarioModo) {
     setPidiendoTipo(false);
+    setMostrarDepositos(false);
     setError('');
 
     // El modo de la terminal se cambia en el momento de elegir, que es lo que se espera al
@@ -143,6 +146,31 @@ export default function InventarioScreen() {
     } catch (e: any) {
       setError(e?.message ?? 'No se pudo crear el inventario.');
     }
+  }
+
+  /**
+   * Cambia el depósito activo.
+   *
+   * La selección es la misma que la del tab de Stock: se guarda en la sesión, así que elegir acá
+   * también cambia sobre qué depósito consulta Stock, y al revés. Si hay un inventario en
+   * confección se le actualiza el código, porque es el que va a viajar en el ajuste.
+   */
+  async function elegirDeposito(dep: Deposito) {
+    setMostrarDepositos(false);
+    try {
+      await setDeposito(dep);
+      setActual((inv) =>
+        inv ? { ...inv, cabecera: { ...inv.cabecera, depositoCode: dep.Codigo ?? '' } } : inv
+      );
+      setError('');
+    } catch (e: any) {
+      setError(e?.message ?? 'No se pudo cambiar el depósito.');
+    }
+  }
+
+  function etiquetaDeposito(dep?: Deposito | null): string {
+    if (!dep) return 'Seleccionar depósito';
+    return dep.Sucursal ? `${dep.Sucursal} - ${dep.nombre}` : dep.nombre;
   }
 
   function editarCabecera(campo: keyof Inventario['cabecera'], valor: string) {
@@ -231,6 +259,15 @@ export default function InventarioScreen() {
               <Text style={styles.botonNuevoTexto}>Nuevo</Text>
             </Pressable>
           </View>
+
+          <SelectorDeposito
+            seleccionado={session?.depositoSeleccionado}
+            depositos={session?.depositos ?? []}
+            abierto={mostrarDepositos}
+            onAlternar={() => setMostrarDepositos((v) => !v)}
+            onElegir={elegirDeposito}
+            etiqueta={etiquetaDeposito}
+          />
 
           <Text style={styles.ayuda}>
             Se conservan los últimos 10. Al crear uno nuevo se descarta el más viejo.
@@ -349,9 +386,15 @@ export default function InventarioScreen() {
           </Campo>
 
           <Campo etiqueta="Depósito">
-            <Text style={styles.soloLectura}>
-              {session?.depositoSeleccionado?.nombre ?? '—'} ({actual.cabecera.depositoCode})
-            </Text>
+            <SelectorDeposito
+              seleccionado={session?.depositoSeleccionado}
+              depositos={session?.depositos ?? []}
+              abierto={mostrarDepositos}
+              onAlternar={() => setMostrarDepositos((v) => !v)}
+              onElegir={elegirDeposito}
+              etiqueta={etiquetaDeposito}
+              sinTitulo
+            />
           </Campo>
 
           <Campo etiqueta="Tipo de ítem">
@@ -606,6 +649,70 @@ export default function InventarioScreen() {
   );
 }
 
+/**
+ * Desplegable de depósitos. Muestra el código junto al nombre porque es el dato que termina
+ * viajando en el ajuste, y sin verlo no hay forma de darse cuenta de que falta.
+ */
+function SelectorDeposito({
+  seleccionado,
+  depositos,
+  abierto,
+  onAlternar,
+  onElegir,
+  etiqueta,
+  sinTitulo,
+}: {
+  seleccionado?: Deposito | null;
+  depositos: Deposito[];
+  abierto: boolean;
+  onAlternar: () => void;
+  onElegir: (dep: Deposito) => void;
+  etiqueta: (dep?: Deposito | null) => string;
+  sinTitulo?: boolean;
+}) {
+  return (
+    <View style={styles.depositoCaja}>
+      {!sinTitulo && <Text style={styles.etiqueta}>Depósito</Text>}
+
+      <Pressable style={styles.depositoSelector} onPress={onAlternar}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.depositoNombre} numberOfLines={1}>
+            {etiqueta(seleccionado)}
+          </Text>
+          <Text style={[styles.depositoCodigo, !seleccionado?.Codigo && styles.depositoSinCodigo]}>
+            {seleccionado?.Codigo ? `Código: ${seleccionado.Codigo}` : 'Sin código: no se puede inventariar'}
+          </Text>
+        </View>
+        <Ionicons name={abierto ? 'chevron-up' : 'chevron-down'} size={20} color="#475467" />
+      </Pressable>
+
+      {abierto && (
+        <View style={styles.depositoLista}>
+          {depositos.length === 0 && <Text style={styles.ayudaChica}>No hay depósitos disponibles.</Text>}
+          {depositos.map((dep) => {
+            const activo = seleccionado?.uuid === dep.uuid;
+            return (
+              <Pressable
+                key={dep.uuid}
+                style={[styles.depositoItem, activo && styles.depositoItemActivo]}
+                onPress={() => onElegir(dep)}
+              >
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.depositoItemTexto, activo && styles.depositoItemTextoActivo]}>
+                    {etiqueta(dep)}
+                  </Text>
+                  <Text style={styles.depositoCodigo}>{dep.Codigo ?? 'sin código'}</Text>
+                </View>
+                {activo && <Ionicons name="checkmark" size={18} color="#0b63ce" />}
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+}
+
 function Campo({ etiqueta, children }: { etiqueta: string; children: React.ReactNode }) {
   return (
     <View style={styles.campo}>
@@ -666,6 +773,28 @@ const styles = StyleSheet.create({
   estadoPendiente: { backgroundColor: '#fffaeb', color: '#b54708' },
   estadoEnviado: { backgroundColor: '#ecfdf3', color: '#027a48' },
   estadoError: { backgroundColor: '#fef3f2', color: '#b42318' },
+
+  depositoCaja: { gap: 6 },
+  depositoSelector: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: '#fff', borderWidth: 1, borderColor: '#d0d5dd',
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10,
+  },
+  depositoNombre: { fontWeight: '600', color: '#101828' },
+  depositoCodigo: { fontSize: 11, color: '#667085', marginTop: 2 },
+  depositoSinCodigo: { color: '#b42318', fontWeight: '700' },
+  depositoLista: {
+    backgroundColor: '#fff', borderWidth: 1, borderColor: '#eaecf0',
+    borderRadius: 10, overflow: 'hidden',
+  },
+  depositoItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 12, paddingVertical: 10,
+    borderBottomWidth: 1, borderBottomColor: '#f2f4f7',
+  },
+  depositoItemActivo: { backgroundColor: '#eff8ff' },
+  depositoItemTexto: { color: '#344054', fontWeight: '600' },
+  depositoItemTextoActivo: { color: '#0b63ce' },
 
   campo: { gap: 6 },
   etiqueta: { fontSize: 13, fontWeight: '700', color: '#344054' },
