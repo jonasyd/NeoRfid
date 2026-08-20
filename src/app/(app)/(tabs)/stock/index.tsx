@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, Vibration, View } from 'react-native';
+import { ActivityIndicator, Animated, Image, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, Vibration, View } from 'react-native';
 import { Screen } from '@/components/Screen';
 import { getStock, searchModels, getSession } from '@/services/api';
 import { buildEpc, stringToHex, hexPassthrough, breakdownEpc, type EpcDetectionMode } from '@/services/epc';
@@ -14,6 +14,16 @@ const POWER_MAX = 33;
 
 const MIN_SEARCH = 3;
 const DEBOUNCE_MS = 350;
+
+/** Frase exacta que parpadea mientras la señal es floja. */
+const WEAK_SIGNAL_HINT = 'Señal débil, seguí buscando';
+
+function proximityHint(rssi: number): string {
+  const pct = proximityPct(rssi);
+  if (pct > 0.66) return 'Muy cerca';
+  if (pct > 0.33) return 'Cerca';
+  return WEAK_SIGNAL_HINT;
+}
 
 type DetectionState = {
   mode: EpcDetectionMode;
@@ -698,13 +708,7 @@ export default function StockScreen() {
                     ]}
                   />
                 </View>
-                <Text style={styles.proximityHint}>
-                  {proximityPct(detection.lastTag.rssi) > 0.66
-                    ? 'Muy cerca'
-                    : proximityPct(detection.lastTag.rssi) > 0.33
-                    ? 'Cerca'
-                    : 'Señal débil, seguí buscando'}
-                </Text>
+                <ProximityHint rssi={detection.lastTag.rssi} />
               </>
             ) : detection.reads > 0 ? (
               <>
@@ -773,6 +777,41 @@ function extractSku(model?: string): string | null {
     return match[1].trim();
   }
   return model.trim() || null;
+}
+
+/**
+ * Texto de proximidad. Parpadea sólo mientras la señal es floja, que es cuando conviene que
+ * llame la atención: la persona está barriendo la zona sin mirar la pantalla todo el tiempo.
+ * Con señal buena queda fijo, para no distraer justo cuando ya encontró el tag.
+ */
+function ProximityHint({ rssi }: { rssi: number }) {
+  const hint = proximityHint(rssi);
+  const weak = hint === WEAK_SIGNAL_HINT;
+  const opacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    if (!weak) {
+      opacity.setValue(1);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0.25, duration: 450, useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 1, duration: 450, useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+      opacity.setValue(1);
+    };
+  }, [weak, opacity]);
+
+  return (
+    <Animated.Text style={[styles.proximityHint, weak && styles.proximityHintWeak, { opacity }]}>
+      {hint}
+    </Animated.Text>
+  );
 }
 
 function GroupedStockCard({
@@ -1133,7 +1172,8 @@ const styles = StyleSheet.create({
   proximityNear: { backgroundColor: '#12b76a' },
   proximityMid: { backgroundColor: '#f79009' },
   proximityFar: { backgroundColor: '#f04438' },
-  proximityHint: { fontSize: 11, color: '#7a2e0e', marginTop: 4, fontWeight: '600' },
+  proximityHint: { fontSize: 15, color: '#7a2e0e', marginTop: 6, fontWeight: '700' },
+  proximityHintWeak: { fontSize: 17, color: '#b42318', fontWeight: '800' },
 
   // Custom deposit selector styles
   depositContainer: { backgroundColor: '#fff', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#eaecf0', marginBottom: 12 },
