@@ -122,6 +122,12 @@ export default function ConfiguracionScreen() {
 
   const [readMode, setReadModeState] = useState<'rfid' | 'barcode'>('rfid');
 
+  // Modo de trabajo del equipo: 0 respuesta, 1 activo, 2 gatillo. null mientras no lo sepamos.
+  const [workMode, setWorkMode] = useState<number | null>(null);
+
+  // Modo de salida del equipo: 0 HID, 1 transparente. null mientras no lo sepamos.
+  const [outputMode, setOutputMode] = useState<number | null>(null);
+
   // Solo mostramos lectores Chafon. El resto de los BLE del entorno (auriculares, relojes,
   // direcciones random) no sirven y solo generan errores: conectarse a uno deja la app
   // reintentando contra un equipo que jamás va a exponer el servicio del lector.
@@ -237,6 +243,14 @@ export default function ConfiguracionScreen() {
       } else if (payload.power === 0) {
         setAntennaPower(0);
       }
+      // Modo de trabajo del equipo, para que el botón muestre el estado real.
+      if (typeof payload.workMode === 'number') {
+        setWorkMode(payload.workMode);
+      }
+    });
+
+    const outputSub = ChafonH103.addOutputModeListener((payload) => {
+      if (typeof payload?.mode === 'number') setOutputMode(payload.mode);
     });
 
     const batterySub = ChafonH103.addBatteryListener((payload) => {
@@ -267,6 +281,7 @@ export default function ConfiguracionScreen() {
       errSub.remove();
       batterySub.remove();
       paramSub.remove();
+      outputSub.remove();
       tagSub.remove();
     };
   }, []);
@@ -461,6 +476,52 @@ export default function ConfiguracionScreen() {
     }
   }
 
+  /**
+   * Alterna entre modo respuesta (0) y modo gatillo (2).
+   *
+   * En modo respuesta el lector sólo actúa ante comandos de la app: al apretar el gatillo hace su
+   * barrido y contesta "comando completado", pero no entrega los tags por BLE. En modo gatillo el
+   * disparo inicia el inventario y sí reporta las lecturas.
+   */
+  /**
+   * Alterna el modo de salida del equipo entre HID (0x00) y transparente (0x01).
+   *
+   * Ojo con la intuición: el manual llama al 0x01 "transparent transmission", pero en este equipo
+   * los tags llegan por BLE estando en 0x00. Tras un restore de fábrica queda en 0x00, y en ese
+   * estado la app del fabricante lee sin tocar nada. Pasarlo a 0x01 hace que el inventario siga
+   * contestando "comando ejecutado" sin entregar una sola trama de tag.
+   * Por eso la app ya no lo cambia sola: se cambia acá, a mano, si hace falta.
+   */
+  async function handleToggleOutputMode() {
+    const next = outputMode === 1 ? 0 : 1;
+    try {
+      await ChafonH103.setTransparentMode(next === 1);
+      Alert.alert(
+        'Modo de salida',
+        next === 1
+          ? 'La terminal quedó en modo transparente.'
+          : 'La terminal quedó en modo HID, que es con el que este equipo entrega las lecturas por Bluetooth.'
+      );
+    } catch (e: any) {
+      Alert.alert('Modo de salida', e?.message ?? 'No se pudo cambiar el modo de salida.');
+    }
+  }
+
+  async function handleToggleWorkMode() {
+    const next = workMode === 2 ? 0 : 2;
+    try {
+      await ChafonH103.setWorkMode(next);
+      Alert.alert(
+        'Modo de trabajo',
+        next === 2
+          ? 'La terminal quedó en modo gatillo: al apretar el gatillo empieza a inventariar y las lecturas llegan a la app.'
+          : 'La terminal volvió a modo respuesta: sólo lee cuando la app se lo pide.'
+      );
+    } catch (e: any) {
+      Alert.alert('Modo de trabajo', e?.message ?? 'No se pudo cambiar el modo de trabajo.');
+    }
+  }
+
   function handleFactoryReset() {
     Alert.alert(
       'Restaurar de fábrica',
@@ -540,7 +601,7 @@ export default function ConfiguracionScreen() {
     <Screen>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <Text style={styles.title}>Configuración</Text>
-        <Text style={styles.buildTag}>Build #8131 (reconectar aborta intento previo)</Text>
+        <Text style={styles.buildTag}>Build #8147 (selector de modo de salida)</Text>
 
         {/* Sesión de Usuario */}
         <Text style={styles.section}>Sesión de Usuario</Text>
@@ -644,6 +705,23 @@ export default function ConfiguracionScreen() {
             >
               <Ionicons name="barcode-outline" size={18} color={readMode === 'barcode' ? '#fff' : '#0b63ce'} />
               <Text style={[styles.buttonSecondaryText, readMode === 'barcode' && styles.buttonActiveText]}>Barcode</Text>
+            </Pressable>
+
+            <Pressable style={styles.buttonSecondary} onPress={handleToggleOutputMode}>
+              <Ionicons name="swap-horizontal-outline" size={18} color="#0b63ce" />
+              <Text style={styles.buttonSecondaryText}>
+                Salida: {outputMode === 1 ? 'Transparente' : outputMode === 0 ? 'HID' : '—'}
+              </Text>
+            </Pressable>
+
+            <Pressable
+              style={[styles.buttonSecondary, workMode === 2 && styles.buttonActive]}
+              onPress={handleToggleWorkMode}
+            >
+              <Ionicons name="flash-outline" size={18} color={workMode === 2 ? '#fff' : '#0b63ce'} />
+              <Text style={[styles.buttonSecondaryText, workMode === 2 && styles.buttonActiveText]}>
+                {workMode === 2 ? 'Modo gatillo activo' : 'Activar modo gatillo'}
+              </Text>
             </Pressable>
 
             <Pressable style={styles.buttonSecondary} onPress={handleFactoryReset}>

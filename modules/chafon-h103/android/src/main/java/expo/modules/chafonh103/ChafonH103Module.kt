@@ -28,6 +28,35 @@ import java.util.UUID
 class ChafonH103Module : Module() {
   companion object {
     private const val LOG_TAG = "ChafonH103"
+
+    // Codigos STATUS del protocolo (apendice A del manual del lector).
+    private const val CMD_INVENTORY = 0x0001
+    private const val CMD_READMODE = 0x008E
+    private const val READ_MODE_RFID: Byte = 0x00
+    private const val READ_MODE_BARCODE: Byte = 0x01
+    private const val STATUS_PARAM_ERROR = 0x01     // parametro fuera de rango o no soportado
+    private const val STATUS_MODULE_ERROR = 0x02    // fallo interno del modulo (fijar frecuencia/potencia)
+    private const val STATUS_INVENTORY_DONE = 0x12  // el barrido termino
+    private const val STATUS_NO_TAGS = 0x13         // no se encontro ningun tag
+
+    // El equipo puede repetir la MISMA respuesta decenas de veces: se midieron 125 respuestas
+    // identicas a un unico SET_PWR. Colapsamos las repetidas dentro de esta ventana.
+    private const val FRAME_DEDUPE_MS = 400L
+
+    // NO usar RFM_SETISO_SELECTMASK como filtro de inventario.
+    //
+    // El manual es explicito: "This command is used to set the tag EPC number required for tag
+    // OPERATION (read, write, lock and deactivate)". Es la precondicion para operar sobre un tag
+    // puntual, no un filtro de busqueda; la app del fabricante solo la usa en su pantalla de
+    // operaciones sobre tags y jamas en el inventario.
+    //
+    // Peor todavia: la seleccion QUEDA GUARDADA EN EL EQUIPO. Al usarla como filtro, el lector
+    // dejaba de reportar tags y el estado sobrevivia al cierre de la app: la propia app del
+    // fabricante tampoco podia leer hasta hacerle un "restore" de fabrica al equipo.
+    //
+    // El filtrado por prefijo se hace en la app (ver detectionMaskEpc en sendTag), que siempre
+    // funciono y no deja rastro en el equipo.
+    private const val USE_HARDWARE_SELECT_MASK = false
     // Descubrir servicios + negociar MTU puede tardar bastante en equipos lentos; damos margen
     // amplio antes de dar por colgada la conexión (el equipo real cortaba solo a los ~30s).
     private const val CONNECT_WATCHDOG_MS = 20_000L
@@ -43,6 +72,15 @@ class ChafonH103Module : Module() {
   private var notifyUuid: UUID? = null
   private var writeUuid: UUID? = null
   private var inventoryRunning = false
+  @Volatile private var lastFrameHex: String? = null
+  @Volatile private var lastFrameAtMs = 0L
+  @Volatile private var duplicateFrameCount = 0
+  // Última potencia efectivamente enviada al equipo, para no repetir el comando al pedo.
+  @Volatile private var lastPowerSent: Int? = null
+  // Modo de lectura REAL del equipo en esta conexion (0x00 RFID, 0x01 codigo de barras).
+  // El equipo guarda el modo de forma persistente y lo conserva entre apps y entre reinicios,
+  // asi que no alcanza con lo que la UI crea recordar: hay que forzarlo y llevar la cuenta aca.
+  @Volatile private var currentReadMode: Byte? = null
   private var soundEnabled = true
   private var detectionMaskEpc: String? = null
   private var scanResultCount = 0
@@ -78,6 +116,76 @@ class ChafonH103Module : Module() {
   @Volatile private var latestAllParam: AllParamBean? = null
 
   private val notifyCallback = object : IOnNotifyCallback {
+    // Trama cruda: el SDK solo nos entrega beans para algunos comandos, así que el STATUS de
+    // respuestas como SET_PWR (0x53) o SET_ALL_PARAM (0x71) no llega por onNotify(int, CmdData).
+    // Loguearlas acá permite ver si el equipo aceptó o rechazó cada comando.
+    override fun onNotify(bytes: ByteArray?) {
+      if (bytes == null || bytes.size < 6) return
+      val cmd = ((bytes[2].toInt() and 0xFF) shl 8) or (bytes[3].toInt() and 0xFF)
+      val len = bytes[4].toInt() and 0xFF
+      val status = bytes[5].toInt() and 0xFF
+      val signature = bytes.toHex()
+      val now = System.currentTimeMillis()
+
+      // Colapsamos las repeticiones identicas: el equipo llego a contestar 125 veces la misma
+      // trama a un solo comando, lo que tapaba el resto del log.
+      if (signature == lastFrameHex && now - lastFrameAtMs < FRAME_DEDUPE_MS) {
+        duplicateFrameCount++
+        lastFrameAtMs = now
+        return
+      }
+      if (duplicateFrameCount > 0) {
+        android.util.Log.d(LOG_TAG, "(se omitieron $duplicateFrameCount repeticiones de $lastFrameHex)")
+        duplicateFrameCount = 0
+      }
+      lastFrameHex = signature
+      lastFrameAtMs = now
+      android.util.Log.d(LOG_TAG, "respuesta cruda cmd=0x%04X len=%d status=0x%02X : %s".format(cmd, len, status, signature))
+
+      // STATUS 0x02 es el estado en el que el modulo RFID del lector queda trabado: el Bluetooth
+      // sigue contestando, pero la radio no lee ningun tag y el equipo deja de devolver sus
+      // parametros. Sin avisarlo, la app se ve "conectada y buscando" con 0 lecturas para
+      // siempre, y el problema parece de la app cuando en realidad es del equipo.
+      if (status == STATUS_MODULE_ERROR || status == STATUS_PARAM_ERROR) {
+        val message = if (status == STATUS_MODULE_ERROR) {
+          // 0x02 durante un barrido suele ser potencia demasiado alta para lo que el equipo
+          // tolera: se midio a este lector fallar a 33 dBm y leer sin problemas a 2 dBm.
+          if (cmd == CMD_INVENTORY)
+            "El modulo RFID fallo al ejecutar el barrido. Suele ser potencia de antena demasiado alta: proba bajarla."
+          else
+            "El modulo RFID del lector esta en falla y no ejecuta comandos. Proba bajar la potencia de antena."
+        } else {
+          "El lector rechazo un parametro del comando."
+        }
+        android.util.Log.w(LOG_TAG, "falla del equipo en cmd=0x%04X: $message".format(cmd))
+        sendEvent("onModuleFault", mapOf(
+          "command" to "0x%04X".format(cmd),
+          "status" to status,
+          "message" to message
+        ))
+      }
+
+      // Respuesta de RFM_SET_GET_READMODE en modo lectura: CF 00 00 8E 09 STATUS READMODE ...
+      // El SDK no la convierte en bean, asi que la interpretamos aca para saber en que modo esta
+      // realmente el equipo sin tener que escribirselo.
+      if (cmd == CMD_READMODE && len >= 2 && status == 0x00 && bytes.size > 6) {
+        val reported = bytes[6]
+        currentReadMode = reported
+        android.util.Log.d(LOG_TAG, "modo de lectura del equipo = ${if (reported == READ_MODE_BARCODE) "barcode" else "rfid"}")
+        sendEvent("onReadMode", mapOf("mode" to if (reported == READ_MODE_BARCODE) "barcode" else "rfid"))
+      }
+
+      // Respuestas de inventario sin datos de tag. Distinguen "el lector no esta buscando" de
+      // "el lector barrio y no habia nada", que en la UI se veian igual: Lecturas 0.
+      if (cmd == CMD_INVENTORY && len == 1) {
+        sendEvent("onInventoryOutcome", mapOf(
+          "status" to status,
+          "completed" to (status == STATUS_INVENTORY_DONE),
+          "noTags" to (status == STATUS_NO_TAGS)
+        ))
+      }
+    }
+
     override fun onNotify(type: Int, data: CmdData) {
       when (val value = data.data) {
         is TagInfoBean -> sendTag(value)
@@ -92,6 +200,14 @@ class ChafonH103Module : Module() {
           val mode = value.mMode.toInt() and 0xFF
           android.util.Log.d(LOG_TAG, "onNotify OutputMode mode=$mode (0=HID, 1=transparente)")
           sendEvent("onOutputMode", mapOf("mode" to mode, "transparent" to (mode == 0x01)))
+          // NO lo corregimos. Solo lo informamos.
+          //
+          // Contra lo que sugiere el manual (0x00 "HID output", 0x01 "transparent"), este equipo
+          // reporta los tags por BLE estando en 0x00. Se comprobo: tras un restore de fabrica el
+          // equipo queda en 0x00, y en ese estado la app del fabricante leyo 14 tags sin siquiera
+          // consultar el modo de salida. Cuando nosotros lo pasabamos a 0x01, el inventario
+          // seguia contestando "comando ejecutado" pero no llegaba ni una trama de tag.
+          // El modo de salida se cambia solo si la persona lo pide (setTransparentMode).
         }
         is KeyStateBean -> {
           val st = value.mKeyState.toInt() and 0xFF
@@ -99,12 +215,26 @@ class ChafonH103Module : Module() {
           sendEvent("onKeyState", mapOf("state" to if (st == 0x01) "start" else "end"))
         }
         is AllParamBean -> {
-          latestAllParam = value
-          android.util.Log.d(LOG_TAG, "onNotify AllParam power=${value.mRfidPower.toInt() and 0xFF}")
-          sendEvent("onAllParamLoaded", mapOf(
-            "power" to (value.mRfidPower.toInt() and 0xFF),
-            "buzzerEnabled" to ((value.mBuzzerTime.toInt() and 0xFF) != 0)
-          ))
+          // El SDK arma un AllParamBean tambien para las respuestas de ERROR, con el STATUS
+          // puesto y el resto de los campos vacios. Aceptarlo hacia que la UI mostrara
+          // parametros inventados: informaba una potencia como confirmada por el equipo cuando
+          // la respuesta real era "error interno del modulo".
+          if (value.mStatus != 0) {
+            android.util.Log.w(LOG_TAG, "AllParam descartado: status=0x%02X".format(value.mStatus))
+          } else {
+            latestAllParam = value
+            val pwr = value.mRfidPower.toInt() and 0xFF
+            android.util.Log.d(LOG_TAG, "onNotify AllParam power=$pwr")
+            if (pwr == 0) {
+              // Antena apagada: el inventario corre, termina al instante y no ve ningun tag.
+              android.util.Log.w(LOG_TAG, "el equipo reporta potencia 0 dBm: la antena esta apagada")
+            }
+            sendEvent("onAllParamLoaded", mapOf(
+              "power" to pwr,
+              "buzzerEnabled" to ((value.mBuzzerTime.toInt() and 0xFF) != 0),
+              "workMode" to (value.mWorkMode.toInt() and 0xFF)
+            ))
+          }
         }
         else -> {}
       }
@@ -113,7 +243,7 @@ class ChafonH103Module : Module() {
 
   override fun definition() = ModuleDefinition {
     Name("ChafonH103")
-    Events("onDeviceFound", "onTagRead", "onConnectionState", "onScanError", "onBatteryLevel", "onAllParamLoaded", "onOutputMode", "onKeyState")
+    Events("onDeviceFound", "onTagRead", "onConnectionState", "onScanError", "onBatteryLevel", "onAllParamLoaded", "onOutputMode", "onKeyState", "onModuleFault", "onInventoryOutcome", "onReadMode")
 
     Function("isSupported") {
       val manager = appContext.reactContext?.getSystemService(android.content.Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
@@ -397,9 +527,14 @@ class ChafonH103Module : Module() {
       ensureInitialized()
       requireCharacteristics()
       requireReady()
-      val command = CmdBuilder.buildInventoryISOContinueCmd(mode.toByte(), intervalMs)
       val s = serviceUuid ?: throw IllegalStateException("Falta Service UUID del H103.")
       val w = writeUuid ?: throw IllegalStateException("Falta Write Characteristic UUID del H103.")
+      ensureRfidMode(s, w)
+      if (inventoryRunning) {
+        writeWithRetry(s, w, CmdBuilder.buildStopInventoryCmd())
+        try { Thread.sleep(300) } catch (_: InterruptedException) {}
+      }
+      val command = CmdBuilder.buildInventoryISOContinueCmd(mode.toByte(), intervalMs)
       val ok = writeWithRetry(s, w, command)
       android.util.Log.d(LOG_TAG, "startInventory(invType=$mode, invParam=$intervalMs) -> ok=$ok")
       if (!ok) throw IllegalStateException("No se pudo enviar el comando de inventory al H103")
@@ -428,16 +563,78 @@ class ChafonH103Module : Module() {
       // anterior, filtraba también las lecturas de código de barras.
       detectionMaskEpc = null
       inventoryRunning = false
-      val modeByte = if (mode == "barcode") 0x01.toByte() else 0x00.toByte()
+      // La app del fabricante conmuta este flag global del SDK junto con el modo del equipo:
+      // define como se interpreta la carga util de las respuestas de inventario. En modo escaner
+      // el contenido es el codigo de barras en crudo y no debe separarse en EPC + datos.
+      CfSdk.readerOrScanner = if (mode == "barcode") CfSdk.SCANNER_MODEL else CfSdk.RFID_MODEL
+      val modeByte = if (mode == "barcode") READ_MODE_BARCODE else READ_MODE_RFID
       val command = CmdBuilder.buildSetReadModeCmd(modeByte, ByteArray(7))
       val s = serviceUuid ?: throw IllegalStateException("Falta Service UUID del H103.")
       val w = writeUuid ?: throw IllegalStateException("Falta Write Characteristic UUID del H103.")
       val ok = writeWithRetry(s, w, command)
       android.util.Log.d(LOG_TAG, "setReadMode($mode) -> ok=$ok isConnect=${bleCore?.isConnect}")
       if (!ok) throw IllegalStateException("No se pudo cambiar el modo de lectura (RFID/Barcode).")
+      currentReadMode = modeByte
       // El manual (RFM_SET_GET_READMODE) indica: "when setting, you need to wait for 1 second
       // to completely start the module". Sin esta espera, el comando siguiente puede perderse.
       try { Thread.sleep(1100) } catch (_: InterruptedException) {}
+    }
+
+    // Dispara UNA lectura de código de barras. Verificado contra la app demo del fabricante:
+    // en modo barcode manda el mismo comando de inventory pero con InvType=0x01 (por cantidad
+    // de ciclos) e InvParam=1, o sea un único disparo:  CF FF 00 01 05 01 00 00 00 01
+    // Sin este comando el equipo nunca escanea: cambiar el modo de lectura no alcanza, y por eso
+    // el 2D no entregaba nada por BLE.
+    AsyncFunction("triggerBarcodeScan") {
+      ensureInitialized()
+      requireCharacteristics()
+      requireReady()
+      CfSdk.readerOrScanner = CfSdk.SCANNER_MODEL
+      val s = serviceUuid ?: throw IllegalStateException("Falta Service UUID del H103.")
+      val w = writeUuid ?: throw IllegalStateException("Falta Write Characteristic UUID del H103.")
+      val ok = writeWithRetry(s, w, CmdBuilder.buildInventoryISOContinueCmd(0x01.toByte(), 1))
+      android.util.Log.d(LOG_TAG, "triggerBarcodeScan -> ok=$ok")
+      if (!ok) throw IllegalStateException("No se pudo disparar la lectura de código de barras.")
+    }
+
+    /**
+     * Modo de trabajo del equipo: 0 = respuesta, 1 = activo, 2 = gatillo.
+     *
+     * En modo RESPUESTA (el de fabrica) el lector solo actua ante comandos del host: al apretar
+     * el gatillo hace un barrido local y contesta "comando completado", pero NO entrega los tags
+     * por el canal de comandos. Por eso el gatillo pita y a la app no le llega nada.
+     * En modo GATILLO el propio disparo inicia el inventario y reporta las lecturas.
+     *
+     * Se fija dentro del bloque completo de parametros, igual que la potencia: el equipo lo
+     * guarda de forma persistente.
+     */
+    AsyncFunction("setWorkMode") { mode: Int ->
+      ensureInitialized()
+      requireCharacteristics()
+      requireReady()
+      if (mode !in 0..2) throw IllegalArgumentException("Modo de trabajo inválido: $mode (0=respuesta, 1=activo, 2=gatillo).")
+      val s = serviceUuid ?: throw IllegalStateException("Falta Service UUID del H103.")
+      val w = writeUuid ?: throw IllegalStateException("Falta Write Characteristic UUID del H103.")
+
+      var param = latestAllParam
+      if (param == null) {
+        writeWithRetry(s, w, CmdBuilder.buildGetAllParamCmd())
+        val end = System.currentTimeMillis() + 2000
+        while (latestAllParam == null && System.currentTimeMillis() < end) {
+          try { Thread.sleep(50) } catch (_: InterruptedException) {}
+        }
+        param = latestAllParam
+      }
+      if (param == null) {
+        throw IllegalStateException("El equipo no devolvió sus parámetros, así que no se puede cambiar el modo de trabajo. Reintentá en unos segundos.")
+      }
+
+      param.mWorkMode = mode.toByte()
+      val ok = writeWithRetry(s, w, CmdBuilder.buildSetAllParamCmd(param))
+      if (!ok) throw IllegalStateException("No se pudo cambiar el modo de trabajo del equipo.")
+      android.util.Log.d(LOG_TAG, "setWorkMode($mode) via SET_ALL_PARAM -> ok=$ok")
+      try { Thread.sleep(500) } catch (_: InterruptedException) {}
+      writeWithRetry(s, w, CmdBuilder.buildGetAllParamCmd())
     }
 
     AsyncFunction("setPower") { powerDbm: Int ->
@@ -445,19 +642,45 @@ class ChafonH103Module : Module() {
       requireCharacteristics()
       requireReady()
       val clampedPower = powerDbm.coerceIn(POWER_MIN, POWER_MAX)
-      // buildSetPwrCmd(power, resv): el PRIMER parámetro es la potencia y el segundo el campo
-      // reservado. Confirmado en el manual (RFM_SET_PWR, payload = Power 1B + Resv 1B) y en el
-      // bytecode del SDK (arg0 -> byte[5], arg1 -> byte[6]).
-      // Antes se llamaba con (0x00, potencia), o sea que se enviaba SIEMPRE potencia 0: la antena
-      // quedaba apagada y el lector no detectaba ningún tag (AllParam reportaba power=0).
-      val command = CmdBuilder.buildSetPwrCmd(clampedPower.toByte(), 0x00.toByte())
+      if (clampedPower == lastPowerSent) {
+        android.util.Log.d(LOG_TAG, "setPower($clampedPower dBm) omitido: ya es la potencia actual")
+        return@AsyncFunction
+      }
       val s = serviceUuid ?: throw IllegalStateException("Falta Service UUID del H103.")
       val w = writeUuid ?: throw IllegalStateException("Falta Write Characteristic UUID del H103.")
-      val ok = writeWithRetry(s, w, command)
+
+      // La potencia se fija dentro del bloque completo de parametros (RFM_SET_ALL_PARAM, 0x0071),
+      // NO con RFM_SET_PWR (0x0053).
+      //
+      // Medido sobre el equipo: 0x0053 acepta el comando (STATUS 0x00) pero no aplica el valor.
+      // Devuelve ~150 respuestas identicas por comando y termina dejando la potencia en 0, o sea
+      // la antena apagada: el inventario corre, termina al instante y no ve un solo tag. Se llego
+      // a ver el equipo pasar de 33 dBm a 0 despues de una tanda de 0x0053.
+      // La app del fabricante nunca usa 0x0053; fija la potencia con 0x0071, y asi el equipo lee
+      // sin problemas. Hacemos lo mismo.
+      var param = latestAllParam
+      if (param == null) {
+        writeWithRetry(s, w, CmdBuilder.buildGetAllParamCmd())
+        val end = System.currentTimeMillis() + 2000
+        while (latestAllParam == null && System.currentTimeMillis() < end) {
+          try { Thread.sleep(50) } catch (_: InterruptedException) {}
+        }
+        param = latestAllParam
+      }
+      if (param == null) {
+        throw IllegalStateException("El equipo no devolvió sus parámetros, así que no se puede cambiar la potencia con seguridad. Reintentá en unos segundos.")
+      }
+
+      param.mRfidPower = clampedPower.toByte()
+      val ok = writeWithRetry(s, w, CmdBuilder.buildSetAllParamCmd(param))
       if (!ok) throw IllegalStateException("No se pudo establecer la potencia RFID.")
-      android.util.Log.d(LOG_TAG, "setPower($clampedPower dBm) -> ok=$ok")
-      // Releemos los parámetros para que la UI muestre la potencia que realmente quedó aplicada.
+      android.util.Log.d(LOG_TAG, "setPower($clampedPower dBm) via SET_ALL_PARAM -> ok=$ok")
+      lastPowerSent = clampedPower
+      // Ahora si conviene releer: 0x0071 no provoca la avalancha de respuestas que provocaba
+      // 0x0053, y necesitamos el valor CONFIRMADO por el equipo.
+      try { Thread.sleep(500) } catch (_: InterruptedException) {}
       writeWithRetry(s, w, CmdBuilder.buildGetAllParamCmd())
+      Unit
     }
 
     // Fuerza el modo de salida: true = transparente (datos por BLE, lo que necesita la app),
@@ -509,9 +732,24 @@ class ChafonH103Module : Module() {
       requireReady()
       detectionMaskEpc = epcHex.uppercase()
       android.util.Log.d(LOG_TAG, "startDetection mask=$detectionMaskEpc invType=$mode invParam=$intervalMs")
-      val command = CmdBuilder.buildInventoryISOContinueCmd(mode.toByte(), intervalMs)
       val s = serviceUuid ?: throw IllegalStateException("Falta Service UUID del H103.")
       val w = writeUuid ?: throw IllegalStateException("Falta Write Characteristic UUID del H103.")
+      // El equipo tiene que estar en RFID: si quedo en modo codigo de barras (estado que
+      // sobrevive al cierre de la app), el inventario no devuelve ningun EPC.
+      ensureRfidMode(s, w)
+      // Solo cortamos si HAY un barrido corriendo.
+      //
+      // Mandar el stop siempre, justo antes del inventario, resultaba en esto: se escribian los
+      // dos comandos en el mismo segundo, el ack del stop llegaba DESPUES de haber mandado el
+      // inventario, y un segundo mas tarde el equipo contestaba 0x12 ("comando ejecutado") sin
+      // un solo tag. O sea que el stop terminaba matando el barrido recien arrancado.
+      // La app del fabricante no manda ningun stop antes de inventariar, y lee.
+      if (inventoryRunning) {
+        writeWithRetry(s, w, CmdBuilder.buildStopInventoryCmd())
+        try { Thread.sleep(300) } catch (_: InterruptedException) {}
+      }
+      // Sin tocar la seleccion del equipo: el prefijo se compara en la app (sendTag).
+      val command = CmdBuilder.buildInventoryISOContinueCmd(mode.toByte(), intervalMs)
       val ok = writeWithRetry(s, w, command)
       android.util.Log.d(LOG_TAG, "startDetection -> ok=$ok")
       if (!ok) throw IllegalStateException("No se pudo iniciar la detección EPC")
@@ -519,6 +757,10 @@ class ChafonH103Module : Module() {
     }
 
     AsyncFunction("clearDetectionMask") {
+      // Solo limpiamos el prefijo que compara la app. NO se toca la seleccion del equipo:
+      // este lector rechaza RFM_SETISO_SELECTMASK con STATUS 0x02 (error interno del modulo) y
+      // queda sin reportar tags, incluso para la app del fabricante. Como ya no ponemos ninguna
+      // seleccion, tampoco hay nada que deshacer.
       detectionMaskEpc = null
       Unit
     }
@@ -533,6 +775,25 @@ class ChafonH103Module : Module() {
       val ok = writeWithRetry(s, w, command)
       if (!ok) throw IllegalStateException("No se pudo solicitar el nivel de batería.")
       // La respuesta es asíncrona: llega por el evento "onBatteryLevel" (ver setOnNotifyCallback).
+      Unit
+    }
+
+    // RFM_MODULE_INT (0x0050): "el equipo realiza la configuración inicial según sus parámetros
+    // almacenados". Sirve para destrabar el módulo RFID cuando empieza a responder 0x02
+    // ("error interno del módulo") a comandos como GET_ALL_PARAM o el inventory, que es el
+    // síntoma de que la parte de radiofrecuencia quedó en falla aunque el BLE siga respondiendo.
+    AsyncFunction("moduleInit") {
+      ensureInitialized()
+      requireCharacteristics()
+      requireReady()
+      val s = serviceUuid ?: throw IllegalStateException("Falta Service UUID del H103.")
+      val w = writeUuid ?: throw IllegalStateException("Falta Write Characteristic UUID del H103.")
+      val ok = writeWithRetry(s, w, CmdBuilder.buildModuleInitCmd())
+      android.util.Log.d(LOG_TAG, "moduleInit -> ok=$ok")
+      if (!ok) throw IllegalStateException("No se pudo enviar la inicialización del módulo RFID.")
+      // Tras inicializar, el equipo reconfigura la RF: le damos tiempo y releemos parámetros.
+      try { Thread.sleep(1200) } catch (_: InterruptedException) {}
+      writeWithRetry(s, w, CmdBuilder.buildGetAllParamCmd())
       Unit
     }
 
@@ -551,6 +812,8 @@ class ChafonH103Module : Module() {
       inventoryRunning = false
       detectionMaskEpc = null
       latestAllParam = null
+      lastPowerSent = null
+      currentReadMode = null
     }
 
     AsyncFunction("getDeviceInfo") {
@@ -771,8 +1034,32 @@ class ChafonH103Module : Module() {
 
     try {
       android.util.Log.d(LOG_TAG, "Forzando modo transparente post-conexión...")
-      val okMode = writeWithRetry(s, w, CmdBuilder.buildSetOutputModeCmd(0x01.toByte()))
-      android.util.Log.d(LOG_TAG, "Forzar modo transparente -> ok=$okMode")
+      // Solo PREGUNTAMOS en que modo de salida esta. Si contesta HID lo corregimos en el
+      // handler de OutputModeBean; si ya esta en transparente no le escribimos nada.
+      //
+      // La app del fabricante, en la sesion donde leyo 14 tags, no escribio NADA antes de
+      // inventariar: solo pidio info del equipo y sus parametros. Cada escritura de
+      // configuracion que le agregabamos era una oportunidad de dejar el modulo en mal estado.
+      val okMode = writeWithRetry(s, w, CmdBuilder.buildGetOutputModeCmd())
+      android.util.Log.d(LOG_TAG, "Consultando modo de salida -> ok=$okMode")
+    } catch (_: Exception) {}
+
+    // Preguntamos en que modo de lectura esta, sin escribirlo. El equipo recuerda el modo entre
+    // sesiones, asi que hay que conocerlo; pero FIJARLO reinicia el modulo lector (el manual pide
+    // esperar 1 segundo tras hacerlo) y en este equipo eso deja la parte de RF sin reportar tags.
+    // Si la respuesta dice que quedo en codigo de barras, ensureRfidMode() lo corrige antes del
+    // inventario; si ya esta en RFID no le escribimos nada.
+    try {
+      if (w != null) {
+        val okRead = writeWithRetry(s, w, CmdBuilder.buildGetReadModeCmd())
+        android.util.Log.d(LOG_TAG, "Consultando modo de lectura -> ok=$okRead")
+      }
+    } catch (_: Exception) {}
+
+    // Info del equipo: es el primer comando que manda la app del fabricante en la sesion donde
+    // leyo 14 tags, y el unico suyo que no estabamos mandando.
+    try {
+      if (w != null) writeWithRetry(s, w, CmdBuilder.buildGetDeviceInfoCmd())
     } catch (_: Exception) {}
 
     try {
@@ -854,6 +1141,68 @@ class ChafonH103Module : Module() {
       manager.adapter?.bondedDevices?.firstOrNull { it.address.equals(address, ignoreCase = true) }
     } catch (_: SecurityException) {
       null
+    }
+  }
+
+  /**
+   * Filtro de tags por hardware: RFM_SELECT_MASK (0x0007).
+   *
+   * Le pide al lector que solo conteste por los tags cuyo EPC empieza con la mascara, en vez de
+   * traer todos y descartarlos en la app. Es lo que hacen los lectores cuando ofrecen una
+   * busqueda tipo "radar": mucho menos trafico BLE y un RSSI que corresponde siempre al tag
+   * buscado, que es justo lo que necesita la guia de proximidad.
+   *
+   * La mascara solo puede expresarse en BYTES enteros, asi que se envia la parte del prefijo que
+   * cae en un byte completo. El resto (por ejemplo el ultimo digito del color, que es medio byte)
+   * se sigue comparando en la app contra detectionMaskEpc.
+   */
+  private fun applySelectMask(s: UUID, w: UUID, epcHex: String?) {
+    val aligned = epcHex?.let { it.take((it.length / 2) * 2) } ?: ""
+    // Poner una seleccion esta desactivado a proposito (ver USE_HARDWARE_SELECT_MASK).
+    if (aligned.isNotEmpty() && !USE_HARDWARE_SELECT_MASK) return
+    val mask = try {
+      ByteArray(aligned.length / 2) { i -> aligned.substring(i * 2, i * 2 + 2).toInt(16).toByte() }
+    } catch (e: Exception) {
+      android.util.Log.w(LOG_TAG, "mascara EPC invalida: $aligned", e)
+      return
+    }
+    android.util.Log.d(LOG_TAG, "applySelectMask bytes=${mask.size}" + if (mask.isEmpty()) " (limpiar seleccion)" else " hex=$aligned")
+    // No es fatal: si el equipo la rechaza, seguimos filtrando en la app.
+    writeWithRetry(s, w, CmdBuilder.buildSelectMaskCmd(mask))
+  }
+
+  // NOTA: NO existe una rutina para "limpiar la seleccion de tag" del equipo.
+  //
+  // Se intento en su momento mandar RFM_SETISO_SELECTMASK con Pointer 0x0000 y Length 0x00 (los
+  // valores por defecto segun el manual) para deshacer una seleccion previa. Este lector lo
+  // RECHAZA con STATUS 0x02 (error interno del modulo) y a partir de ahi deja de reportar tags:
+  // se comprobo restaurando el equipo de fabrica, verificando que leia, conectando esta app y
+  // viendo que el unico comando entre "leia" y "no lee" era justamente ese.
+  // Como ya no ponemos ninguna seleccion (ver USE_HARDWARE_SELECT_MASK), no hay nada que deshacer.
+
+  private fun ensureRfidMode(s: UUID, w: UUID) {
+    if (currentReadMode == null) {
+      // No lo sabemos todavia: preguntamos en vez de escribir a ciegas.
+      writeWithRetry(s, w, CmdBuilder.buildGetReadModeCmd())
+      val end = System.currentTimeMillis() + 1200
+      while (currentReadMode == null && System.currentTimeMillis() < end) {
+        try { Thread.sleep(50) } catch (_: InterruptedException) {}
+      }
+    }
+    if (currentReadMode == READ_MODE_RFID) return
+    if (currentReadMode == null) {
+      android.util.Log.w(LOG_TAG, "no sabemos el modo de lectura del equipo; no lo tocamos")
+      return
+    }
+    android.util.Log.d(LOG_TAG, "ensureRfidMode: el equipo no esta confirmado en RFID, lo forzamos")
+    val ok = writeWithRetry(s, w, CmdBuilder.buildSetReadModeCmd(READ_MODE_RFID, ByteArray(7)))
+    if (ok) {
+      currentReadMode = READ_MODE_RFID
+      // El manual (RFM_SET_GET_READMODE) pide esperar 1 segundo tras fijar el modo para que el
+      // modulo termine de arrancar; sin la espera el comando siguiente se pierde.
+      try { Thread.sleep(1100) } catch (_: InterruptedException) {}
+    } else {
+      android.util.Log.w(LOG_TAG, "ensureRfidMode: no se pudo fijar el modo RFID")
     }
   }
 

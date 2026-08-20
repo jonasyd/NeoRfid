@@ -5,7 +5,7 @@ import { Screen } from '@/components/Screen';
 import { getStock, searchModels, getSession } from '@/services/api';
 import { buildEpc, stringToHex, hexPassthrough, breakdownEpc, type EpcDetectionMode } from '@/services/epc';
 import type { SearchResult, StockRow, Deposito } from '@/types/api';
-import ChafonH103, { getChafonStatus, hexToAscii, INVENTORY_WINDOW_SECONDS, type ChafonTag } from '@modules/chafon-h103';
+import ChafonH103, { getChafonStatus, hexToAscii, type ChafonTag } from '@modules/chafon-h103';
 import { useSession } from '@/context/SessionContext';
 import { useChafonStatus } from '@/hooks/useChafonStatus';
 
@@ -51,9 +51,18 @@ export default function StockScreen() {
   // Estado del lector compartido con el tab de Configuración (conexión, modo, potencia, batería).
   const chafon = useChafonStatus();
 
-  // Potencia mostrada: la real del equipo si ya la conocemos, si no un valor por defecto.
-  const [powerOverride, setPowerOverride] = useState<number | null>(null);
-  const rfidPower = powerOverride ?? chafon.power ?? 20;
+  // Mostramos la potencia CONFIRMADA por el equipo. Mientras no haya confirmado, mostramos
+  // la pedida como valor provisorio.
+  const rfidPower = chafon.power ?? chafon.powerRequested ?? 20;
+  // La aritmética del +/- va sobre lo ÚLTIMO PEDIDO, no sobre lo confirmado: este equipo no
+  // contesta GET_ALL_PARAM, así que `power` se queda en null y el botón recalculaba siempre el
+  // mismo valor (se vio mandar 24 dBm doce veces seguidas sin que el número avanzara).
+  const powerBase = chafon.powerRequested ?? chafon.power ?? 20;
+  // true cuando pedimos una potencia y el equipo terminó aplicando otra.
+  const powerMismatch =
+    chafon.power != null &&
+    chafon.powerRequested != null &&
+    chafon.power !== chafon.powerRequested;
 
   const [batteryLoading, setBatteryLoading] = useState(false);
 
@@ -203,9 +212,9 @@ export default function StockScreen() {
     setStock([]);
     setSelectedSku('');
     setError('');
-    // changeReadMode pone la terminal en modo Barcode, cambia el modo de búsqueda local y
-    // enfoca el campo de texto para recibir la lectura.
-    await changeReadMode('barcode');
+    await clearDetection();
+    // Pone la terminal en modo Barcode Y dispara una lectura.
+    await scanBarcodeNow();
   }
 
   // Ejecuta la búsqueda enviando SKU en el body
@@ -277,6 +286,9 @@ export default function StockScreen() {
       // parámetros (el SDK no permite cambiar un campo suelto) y este equipo lo rechaza con
       // STATUS 0x01 (error de parámetro), dejando además al módulo en mal estado justo antes
       // del inventory. El equipo ya pita solo en cada lectura según su propio BuzzerTime.
+      // Arrancamos con el diagnóstico en cero: la falla y los barridos vacíos que informe el
+      // equipo de acá en más corresponden a ESTA búsqueda.
+      ChafonH103.resetDiagnostics();
       await ChafonH103.startDetection(epc);
       setDetection({ mode, epc, running: true, reads: 0, matches: 0 });
       setError('');
@@ -289,18 +301,8 @@ export default function StockScreen() {
     detectionRunningRef.current = !!detection?.running;
   }, [detection?.running]);
 
-  // El firmware no acepta un inventory "infinito": cada comando abre una ventana de
-  // INVENTORY_WINDOW_SECONDS. Mientras la búsqueda siga abierta, la renovamos un poco antes
-  // de que expire para que se comporte como continua.
-  useEffect(() => {
-    if (!detection?.running || !detection.epc) return;
-    const epc = detection.epc;
-    const renewMs = (INVENTORY_WINDOW_SECONDS - 15) * 1000;
-    const timer = setInterval(() => {
-      ChafonH103.startDetection(epc).catch(() => undefined);
-    }, renewMs);
-    return () => clearInterval(timer);
-  }, [detection?.running, detection?.epc]);
+  // El inventory arranca en modo continuo (InvParam=0) y sigue hasta stopInventory, así que
+  // no hace falta renovarlo.
 
   async function stopDetection() {
     try {
@@ -323,12 +325,15 @@ export default function StockScreen() {
 
   // Calibración de potencia RFID Chafon (+/-). Rango del H103 según el manual: [1, 33] dBm.
   async function adjustPower(amount: number) {
-    const next = Math.max(POWER_MIN, Math.min(POWER_MAX, rfidPower + amount));
-    setPowerOverride(next);
+    const next = Math.max(POWER_MIN, Math.min(POWER_MAX, powerBase + amount));
+    if (next === powerBase) return;
     try {
       await ChafonH103.setPower(next);
+      // Confirmación háptica: el equipo no tiene comando de "beep a demanda" (su buzzer solo
+      // suena tras operaciones RFID), así que el aviso de "comando enviado" lo damos acá.
+      Vibration.vibrate(25);
+      setError('');
     } catch (e: any) {
-      setPowerOverride(null);
       setError(e?.message ?? 'No se pudo cambiar la potencia de la antena.');
     }
   }
@@ -346,6 +351,25 @@ export default function StockScreen() {
       setError('');
     } catch (e: any) {
       setError(e?.message ?? 'No se pudo cambiar el modo de lectura.');
+    }
+  }
+
+  /**
+   * Dispara una lectura de código de barras. Cambiar el modo no alcanza: el equipo escanea solo
+   * cuando recibe el comando de inventory (así lo hace la app del fabricante).
+   */
+  async function scanBarcodeNow() {
+    try {
+      if (getChafonStatus().readMode !== 'barcode') {
+        await ChafonH103.setReadMode('barcode');
+        setSearchMode('barcode');
+      }
+      await ChafonH103.triggerBarcodeScan();
+      Vibration.vibrate(25);
+      setError('');
+      setTimeout(() => inputRef.current?.focus(), 100);
+    } catch (e: any) {
+      setError(e?.message ?? 'No se pudo disparar la lectura de código de barras.');
     }
   }
 
@@ -491,15 +515,36 @@ export default function StockScreen() {
           </View>
         </View>
 
-        {chafon.connected && chafon.transparentMode === false && (
-          <Pressable style={styles.hidWarning} onPress={fixTransparentMode}>
-            <Ionicons name="warning-outline" size={16} color="#b54708" />
-            <Text style={styles.hidWarningText}>
-              La terminal está en modo teclado (HID): escribe sola en los campos y roba el foco.
-              Tocá acá para pasarla a modo transparente.
-            </Text>
-          </Pressable>
+        {powerMismatch && (
+          <Text style={styles.powerWarn}>
+            Pediste {chafon.powerRequested} dBm y el equipo aplicó {chafon.power} dBm. Puede estar
+            limitado por su configuración de región o firmware.
+          </Text>
         )}
+
+        {chafon.connected && chafon.power === 0 && (
+          <View style={styles.moduleFaultWarning}>
+            <Ionicons name="alert-circle" size={16} color="#b42318" />
+            <Text style={styles.moduleFaultText}>
+              La antena está en 0 dBm (apagada): el lector no puede leer ningún tag. Subí la
+              potencia con el botón +.
+            </Text>
+          </View>
+        )}
+
+        {chafon.moduleFault && (
+          <View style={styles.moduleFaultWarning}>
+            <Ionicons name="alert-circle" size={16} color="#b42318" />
+            <Text style={styles.moduleFaultText}>
+              {chafon.moduleFault} Está en Configuración → Reiniciar módulo RFID.
+            </Text>
+          </View>
+        )}
+
+        {/* El aviso de "pasala a modo transparente" se sacó a propósito: era mal consejo. Este
+            equipo reporta los tags por BLE estando en modo HID, y pasarlo a transparente los
+            hace desaparecer. El modo HID sólo molesta si además está vinculado como teclado en
+            Android; en ese caso hay que desvincularlo desde el sistema, no cambiarle el modo. */}
 
         <View style={styles.conStockRow}>
           <Text style={styles.conStockTitle}>Sólo con stock</Text>
@@ -660,6 +705,18 @@ export default function StockScreen() {
                   );
                 })()}
               </>
+            ) : chafon.moduleFault ? (
+              /* El equipo contestó un error. Hasta que se recupere no va a leer ningún tag, por
+                 más que la app siga "buscando": mostrarlo evita perseguir en la app un problema
+                 que está en el lector. */
+              <Text style={styles.detectionError}>{chafon.moduleFault}</Text>
+            ) : chafon.emptySweeps > 0 ? (
+              /* El lector confirmó que barrió y no había nada en el campo. Es distinto de que la
+                 app no esté recibiendo: acá el canal funciona y el tag no aparece. */
+              <Text style={styles.detectionWarn}>
+                El lector barrió {chafon.emptySweeps} {chafon.emptySweeps === 1 ? 'vez' : 'veces'} sin
+                encontrar ningún tag. Acercá la terminal o subí la potencia de la antena.
+              </Text>
             ) : (
               <Text style={styles.detectionEpc}>Barré la zona con la terminal…</Text>
             )}
@@ -1076,6 +1133,10 @@ const styles = StyleSheet.create({
   modeToggleActive: { backgroundColor: '#0b63ce', borderColor: '#0b63ce' },
   modeToggleText: { fontSize: 11, fontWeight: '700', color: '#0b63ce' },
   modeToggleTextActive: { color: '#fff' },
+  powerWarn: { fontSize: 11, color: '#b54708', fontWeight: '600' },
+  detectionError: { fontSize: 12, color: '#b42318', fontWeight: '700', marginTop: 4 },
+  moduleFaultWarning: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#fef3f2', borderWidth: 1, borderColor: '#fecdca', borderRadius: 8, padding: 8 },
+  moduleFaultText: { flex: 1, fontSize: 11, color: '#b42318', fontWeight: '700' },
   hidWarning: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#fffaeb', borderWidth: 1, borderColor: '#fedf89', borderRadius: 8, padding: 8 },
   hidWarningText: { flex: 1, fontSize: 11, color: '#b54708', fontWeight: '600' },
   conStockRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderTopWidth: 1, borderTopColor: '#f2f4f7', paddingTop: 8 },
