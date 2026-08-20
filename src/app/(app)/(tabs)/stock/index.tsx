@@ -44,6 +44,9 @@ export default function StockScreen() {
   const [loadingStock, setLoadingStock] = useState(false);
   const [error, setError] = useState('');
   const [detection, setDetection] = useState<DetectionState>(null);
+  // Para llevar la vista hasta la guía de detección apenas arranca una búsqueda.
+  const scrollRef = useRef<ScrollView>(null);
+  const detectionY = useRef(0);
 
   // Dropdown de depósitos
   const [showDepositDropdown, setShowDepositDropdown] = useState(false);
@@ -291,6 +294,11 @@ export default function StockScreen() {
       ChafonH103.resetDiagnostics();
       await ChafonH103.startDetection(epc);
       setDetection({ mode, epc, running: true, reads: 0, matches: 0 });
+      // La guía queda al final de la pantalla; sin esto hay que bajar a mano justo cuando se
+      // necesita tener las manos en la terminal. El margen deja ver el encabezado del bloque.
+      setTimeout(() => {
+        scrollRef.current?.scrollTo({ y: Math.max(0, detectionY.current - 12), animated: true });
+      }, 250);
       setError('');
     } catch (e: any) {
       setError(e?.message ?? 'No se pudo iniciar la detección RFID.');
@@ -304,12 +312,19 @@ export default function StockScreen() {
   // El inventory arranca en modo continuo (InvParam=0) y sigue hasta stopInventory, así que
   // no hace falta renovarlo.
 
+  /**
+   * Detiene el barrido pero DEJA los resultados en pantalla.
+   *
+   * Antes se limpiaba todo al parar, así que el último tag leído, las cuentas y el desglose del
+   * EPC desaparecían justo cuando la persona quería mirarlos. La guía se limpia sola al buscar
+   * otro artículo (ver clearDetection), que es cuando deja de tener sentido.
+   */
   async function stopDetection() {
     try {
       await ChafonH103.stopInventory();
       await ChafonH103.clearDetectionMask();
     } finally {
-      setDetection(null);
+      setDetection((current) => (current ? { ...current, running: false } : null));
     }
   }
 
@@ -399,7 +414,7 @@ export default function StockScreen() {
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
       <Text style={styles.title}>BÚSQUEDA DE ITEMS</Text>
 
       {/* Selector de Depósitos (Combo Box Customizado) */}
@@ -454,99 +469,10 @@ export default function StockScreen() {
         )}
       </View>
 
-      {/* Estado y control de la terminal: potencia, modo de lectura y batería. El estado se
-          comparte con el tab de Configuración, así que refleja lo que ya estaba establecido. */}
-      <View style={styles.terminalCard}>
-        <View style={styles.terminalHeader}>
-          <View style={[styles.terminalDot, chafon.connected ? styles.dotGreen : styles.dotRed]} />
-          <Text style={styles.terminalTitle}>
-            Terminal {chafon.connected ? 'conectada' : 'desconectada'}
-          </Text>
-          <Pressable
-            style={styles.batteryChip}
-            onPress={refreshBattery}
-            disabled={!chafon.connected || batteryLoading}
-          >
-            {batteryLoading ? (
-              <ActivityIndicator size="small" color="#0b63ce" />
-            ) : (
-              <Ionicons name="battery-half-outline" size={15} color={chafon.connected ? '#0b63ce' : '#98a2b3'} />
-            )}
-            <Text style={[styles.batteryChipText, !chafon.connected && { color: '#98a2b3' }]}>
-              {chafon.battery != null ? `${chafon.battery}%` : '--'}
-            </Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.terminalControls}>
-          <View style={styles.powerGroup}>
-            <Text style={styles.groupLabel}>Potencia</Text>
-            <View style={styles.calibrationControls}>
-              <Pressable style={styles.calibButton} onPress={() => adjustPower(-1)} disabled={!chafon.connected}>
-                <Text style={styles.calibButtonText}>-</Text>
-              </Pressable>
-              <Text style={styles.calibValue}>{rfidPower} dBm</Text>
-              <Pressable style={styles.calibButton} onPress={() => adjustPower(1)} disabled={!chafon.connected}>
-                <Text style={styles.calibButtonText}>+</Text>
-              </Pressable>
-            </View>
-          </View>
-
-          <View style={styles.modeGroup}>
-            <Text style={styles.groupLabel}>Modo</Text>
-            <View style={styles.modeToggleRow}>
-              <Pressable
-                style={[styles.modeToggle, chafon.readMode === 'rfid' && styles.modeToggleActive]}
-                onPress={() => changeReadMode('rfid')}
-                disabled={!chafon.connected}
-              >
-                <Ionicons name="radio-outline" size={15} color={chafon.readMode === 'rfid' ? '#fff' : '#0b63ce'} />
-                <Text style={[styles.modeToggleText, chafon.readMode === 'rfid' && styles.modeToggleTextActive]}>RFID</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.modeToggle, chafon.readMode === 'barcode' && styles.modeToggleActive]}
-                onPress={() => changeReadMode('barcode')}
-                disabled={!chafon.connected}
-              >
-                <Ionicons name="barcode-outline" size={15} color={chafon.readMode === 'barcode' ? '#fff' : '#0b63ce'} />
-                <Text style={[styles.modeToggleText, chafon.readMode === 'barcode' && styles.modeToggleTextActive]}>Barcode</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-
-        {powerMismatch && (
-          <Text style={styles.powerWarn}>
-            Pediste {chafon.powerRequested} dBm y el equipo aplicó {chafon.power} dBm. Puede estar
-            limitado por su configuración de región o firmware.
-          </Text>
-        )}
-
-        {chafon.connected && chafon.power === 0 && (
-          <View style={styles.moduleFaultWarning}>
-            <Ionicons name="alert-circle" size={16} color="#b42318" />
-            <Text style={styles.moduleFaultText}>
-              La antena está en 0 dBm (apagada): el lector no puede leer ningún tag. Subí la
-              potencia con el botón +.
-            </Text>
-          </View>
-        )}
-
-        {chafon.moduleFault && (
-          <View style={styles.moduleFaultWarning}>
-            <Ionicons name="alert-circle" size={16} color="#b42318" />
-            <Text style={styles.moduleFaultText}>
-              {chafon.moduleFault} Está en Configuración → Reiniciar módulo RFID.
-            </Text>
-          </View>
-        )}
-
-        {/* El aviso de "pasala a modo transparente" se sacó a propósito: era mal consejo. Este
-            equipo reporta los tags por BLE estando en modo HID, y pasarlo a transparente los
-            hace desaparecer. El modo HID sólo molesta si además está vinculado como teclado en
-            Android; en ese caso hay que desvincularlo desde el sistema, no cambiarle el modo. */}
-
-        <View style={styles.conStockRow}>
+      {/* Filtro de existencias y batería de la terminal, arriba de todo: son los dos datos
+          que se miran de un vistazo antes de buscar. */}
+      <View style={styles.filtersRow}>
+        <View style={styles.conStockInline}>
           <Text style={styles.conStockTitle}>Sólo con stock</Text>
           <Switch
             value={conStockFilter}
@@ -555,6 +481,21 @@ export default function StockScreen() {
             thumbColor={conStockFilter ? '#0b63ce' : '#f2f4f7'}
           />
         </View>
+
+        <Pressable
+          style={styles.batteryChip}
+          onPress={refreshBattery}
+          disabled={!chafon.connected || batteryLoading}
+        >
+          {batteryLoading ? (
+            <ActivityIndicator size="small" color="#0b63ce" />
+          ) : (
+            <Ionicons name="battery-half-outline" size={15} color={chafon.connected ? '#0b63ce' : '#98a2b3'} />
+          )}
+          <Text style={[styles.batteryChipText, !chafon.connected && { color: '#98a2b3' }]}>
+            {chafon.battery != null ? `${chafon.battery}%` : '--'}
+          </Text>
+        </Pressable>
       </View>
 
       {/* Indicador de Modo de Búsqueda */}
@@ -638,13 +579,99 @@ export default function StockScreen() {
         <Text style={styles.empty}>Sin stock para el SKU consultado en el depósito activo.</Text>
       ) : null}
 
+      {/* Estado y control de la terminal: potencia, modo de lectura y batería. El estado se
+          comparte con el tab de Configuración, así que refleja lo que ya estaba establecido. */}
+      <View style={styles.terminalCard}>
+        <View style={styles.terminalHeader}>
+          <View style={[styles.terminalDot, chafon.connected ? styles.dotGreen : styles.dotRed]} />
+          <Text style={styles.terminalTitle}>
+            Terminal {chafon.connected ? 'conectada' : 'desconectada'}
+          </Text>
+        </View>
+
+        <View style={styles.terminalControls}>
+          <View style={styles.powerGroup}>
+            <Text style={styles.groupLabel}>Potencia</Text>
+            <View style={styles.calibrationControls}>
+              <Pressable style={styles.calibButton} onPress={() => adjustPower(-1)} disabled={!chafon.connected}>
+                <Text style={styles.calibButtonText}>-</Text>
+              </Pressable>
+              <Text style={styles.calibValue}>{rfidPower} dBm</Text>
+              <Pressable style={styles.calibButton} onPress={() => adjustPower(1)} disabled={!chafon.connected}>
+                <Text style={styles.calibButtonText}>+</Text>
+              </Pressable>
+            </View>
+          </View>
+
+          <View style={styles.modeGroup}>
+            <Text style={styles.groupLabel}>Modo</Text>
+            <View style={styles.modeToggleRow}>
+              <Pressable
+                style={[styles.modeToggle, chafon.readMode === 'rfid' && styles.modeToggleActive]}
+                onPress={() => changeReadMode('rfid')}
+                disabled={!chafon.connected}
+              >
+                <Ionicons name="radio-outline" size={15} color={chafon.readMode === 'rfid' ? '#fff' : '#0b63ce'} />
+                <Text style={[styles.modeToggleText, chafon.readMode === 'rfid' && styles.modeToggleTextActive]}>RFID</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.modeToggle, chafon.readMode === 'barcode' && styles.modeToggleActive]}
+                onPress={() => changeReadMode('barcode')}
+                disabled={!chafon.connected}
+              >
+                <Ionicons name="barcode-outline" size={15} color={chafon.readMode === 'barcode' ? '#fff' : '#0b63ce'} />
+                <Text style={[styles.modeToggleText, chafon.readMode === 'barcode' && styles.modeToggleTextActive]}>Barcode</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+
+        {powerMismatch && (
+          <Text style={styles.powerWarn}>
+            Pediste {chafon.powerRequested} dBm y el equipo aplicó {chafon.power} dBm. Puede estar
+            limitado por su configuración de región o firmware.
+          </Text>
+        )}
+
+        {chafon.connected && chafon.power === 0 && (
+          <View style={styles.moduleFaultWarning}>
+            <Ionicons name="alert-circle" size={16} color="#b42318" />
+            <Text style={styles.moduleFaultText}>
+              La antena está en 0 dBm (apagada): el lector no puede leer ningún tag. Subí la
+              potencia con el botón +.
+            </Text>
+          </View>
+        )}
+
+        {chafon.moduleFault && (
+          <View style={styles.moduleFaultWarning}>
+            <Ionicons name="alert-circle" size={16} color="#b42318" />
+            <Text style={styles.moduleFaultText}>
+              {chafon.moduleFault} Está en Configuración → Reiniciar módulo RFID.
+            </Text>
+          </View>
+        )}
+
+        {/* El aviso de "pasala a modo transparente" se sacó a propósito: era mal consejo. Este
+            equipo reporta los tags por BLE estando en modo HID, y pasarlo a transparente los
+            hace desaparecer. El modo HID sólo molesta si además está vinculado como teclado en
+            Android; en ese caso hay que desvincularlo desde el sistema, no cambiarle el modo. */}
+
+      </View>
+
       {/* Guía de detección: va debajo del detalle del producto, y se limpia sola
           cuando se busca otro ítem por descripción o SKU (ver clearDetection). */}
-      {detection?.running && (
-        <View style={styles.detectionBanner}>
+      {detection && (
+        <View
+          style={styles.detectionBanner}
+          onLayout={(e) => {
+            detectionY.current = e.nativeEvent.layout.y;
+          }}
+        >
           <View style={{ flex: 1 }}>
             <Text style={styles.detectionTitle}>
-              Buscando por {detection.mode === 'model' ? 'Modelo' : detection.mode === 'color' ? 'Color' : 'Talle'}
+              {detection.running ? 'Buscando' : 'Búsqueda detenida'} por{' '}
+              {detection.mode === 'model' ? 'Modelo' : detection.mode === 'color' ? 'Color' : 'Talle'}
             </Text>
             <Text style={styles.detectionEpc}>Prefijo EPC: {detection.epc}</Text>
 
@@ -721,9 +748,11 @@ export default function StockScreen() {
               <Text style={styles.detectionEpc}>Barré la zona con la terminal…</Text>
             )}
           </View>
-          <Pressable onPress={stopDetection} style={styles.stopButton}>
-            <Ionicons name="stop-circle-outline" size={28} color="#b42318" />
-          </Pressable>
+          {detection.running && (
+            <Pressable onPress={stopDetection} style={styles.stopButton}>
+              <Ionicons name="stop-circle-outline" size={28} color="#b42318" />
+            </Pressable>
+          )}
         </View>
       )}
       </ScrollView>
@@ -1122,6 +1151,8 @@ const styles = StyleSheet.create({
   terminalHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   terminalDot: { width: 9, height: 9, borderRadius: 5 },
   terminalTitle: { flex: 1, fontSize: 13, fontWeight: '700', color: '#344054' },
+  filtersRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 4 },
+  conStockInline: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   batteryChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: '#eff8ff', borderWidth: 1, borderColor: '#b2ddff' },
   batteryChipText: { fontSize: 12, fontWeight: '700', color: '#0b63ce' },
   terminalControls: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
