@@ -123,8 +123,8 @@ export default function InventarioScreen() {
 
   useEffect(() => {
     const sub = ChafonH103.addTagListener((tag: ChafonTag) => {
-      // Sólo capturamos mientras se está confeccionando y con la terminal en modo código de
-      // barras: en RFID esta misma señal trae EPCs, que todavía no se cargan acá.
+      // Por este mismo canal llegan los códigos de barras y los EPC; el modo del inventario
+      // decide cuál de los dos se interpreta.
       if (!enPantallaRef.current) return;
       const inv = actualRef.current;
       if (!inv) return;
